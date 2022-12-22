@@ -1,5 +1,5 @@
 plugins {
-    kotlin("multiplatform") version "1.7.21"
+    alias(libs.plugins.kotlin.multiplatform)
 }
 
 group = "me.kevin"
@@ -11,7 +11,13 @@ repositories {
 
 kotlin {
 
-    linuxX64()
+    linuxX64().apply {
+        compilations.getByName("main") {
+            cinterops {
+                val liburing by creating
+            }
+        }
+    }
 
     sourceSets {
         val linuxX64Main by getting

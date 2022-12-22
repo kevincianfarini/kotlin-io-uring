@@ -1,0 +1,4 @@
+headers = /home/kevin/code/kotlin-io-uring/liburing/src/include/liburing.h
+staticLibraries = liburing.a
+libraryPaths = /home/kevin/code/kotlin-io-uring/liburing/src
+compilerOpts = -I/usr/include
