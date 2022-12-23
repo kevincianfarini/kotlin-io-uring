@@ -48,8 +48,8 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
     }
 
     private fun queueSubmission(sqe: io_uring_sqe, event: SubmissionQueueEvent) {
-        when (event.opcode) {
-            Opcode.NoOp -> io_uring_prep_nop(sqe.ptr)
+        when (event) {
+            SubmissionQueueEvent.NoOp -> io_uring_prep_nop(sqe.ptr)
         }
         io_uring_submit(ring.ptr)
     }
