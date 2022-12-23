@@ -12,7 +12,6 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
     private val scope = CoroutineScope(Job())
     private val arena = Arena()
     private val ring: io_uring = arena.alloc()
-    private val continuations = mutableMapOf<ULong, StableRef<CancellableContinuation<Unit>>>()
 
     init {
         io_uring_queue_init(queueDepth.depth, ring.ptr, ringFlags)
@@ -29,9 +28,8 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
             sqe = io_uring_get_sqe(ring.ptr)?.pointed
         }
 
-        suspendCancellableCoroutine { cont ->
+        suspendCancellableCoroutine<Unit> { cont ->
             val ref = StableRef.create(cont)
-            continuations[ref.userData] = ref
             io_uring_sqe_set_data64(sqe.ptr, ref.userData)
             queueSubmission(sqe, event)
 
@@ -64,9 +62,8 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
                 io_uring_wait_cqe(ring.ptr, cqe.ptr)
                 io_uring_cqe_seen(ring.ptr, cqe.value)
                 val hydratedCqe = cqe.pointed!!
-                continuations[hydratedCqe.user_data]?.also { ref ->
-                    channel.send(hydratedCqe.res to ref)
-                }
+                val ref = hydratedCqe.user_data.toVoidPointer()!!.asStableRef<CancellableContinuation<Unit>>()
+                channel.send(hydratedCqe.res to ref)
             }
         }
 
@@ -74,7 +71,6 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
             for ((res, ref) in channel) {
                 val continuation = ref.get()
                 ref.dispose()
-                continuations.remove(ref.userData)
                 when (res) {
                     0 -> continuation.resume(Unit)
                     else -> continuation.resumeWithException(
@@ -101,3 +97,6 @@ private inline fun UInt.isPowerOf2(): Boolean {
 }
 
 private val StableRef<*>.userData: ULong get() = asCPointer().rawValue.toLong().toULong()
+private fun ULong.toVoidPointer(): COpaquePointer? {
+    return toLong().toCPointer()
+}
