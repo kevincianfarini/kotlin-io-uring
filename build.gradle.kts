@@ -20,7 +20,15 @@ kotlin {
     }
 
     sourceSets {
-        val linuxX64Main by getting
-        val linuxX64Test by getting
+        val linuxX64Main by getting {
+            dependencies {
+                api(libs.kotlinx.coroutines.core)
+            }
+        }
+        val linuxX64Test by getting {
+            dependencies {
+                implementation(libs.kotlin.test)
+            }
+        }
     }
 }
