@@ -11,6 +11,8 @@ repositories {
 
 kotlin {
 
+    explicitApi()
+
     linuxX64().apply {
         compilations.getByName("main") {
             cinterops {

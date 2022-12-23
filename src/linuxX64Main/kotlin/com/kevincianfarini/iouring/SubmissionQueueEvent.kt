@@ -1,6 +1,6 @@
 package com.kevincianfarini.iouring
 
-class SubmissionQueueEvent(
-    val opcode: Opcode,
-    val fileDescriptor: Int,
+public class SubmissionQueueEvent(
+    public val opcode: Opcode,
+    public val fileDescriptor: Int,
 )

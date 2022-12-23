@@ -7,7 +7,7 @@ import liburing.*
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
+public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
 
     private val scope = CoroutineScope(Job())
     private val arena = Arena()
@@ -92,7 +92,7 @@ class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
     }
 }
 
-value class QueueDepth(val depth: UInt) {
+public value class QueueDepth(public val depth: UInt) {
     init { require(depth.isPowerOf2() && depth <= 32_788u) }
 }
 
