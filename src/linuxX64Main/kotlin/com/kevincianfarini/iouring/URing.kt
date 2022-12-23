@@ -28,41 +28,46 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
             sqe = io_uring_get_sqe(ring.ptr)?.pointed
         }
 
-        suspendCancellableCoroutine<Unit> { cont ->
-            val ref = StableRef.create(cont)
-            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
-            queueSubmission(sqe, event)
+        queueSubmission(sqe, event)
+    }
 
-            cont.invokeOnCancellation {
-                 io_uring_prep_cancel64(
-                     user_data = ref.userData,
-                     sqe = sqe.ptr,
-                     flags = 0,
-                 )
-                io_uring_submit(ring.ptr)
-                ref.dispose()
-            }
+    private suspend fun queueSubmission(
+        sqe: io_uring_sqe,
+        event: SubmissionQueueEvent
+    ) = suspendCancellableCoroutine { cont ->
+        val disposableContinuation = prepSubmissionEvent(cont, sqe, event)
+        val ref = StableRef.create(disposableContinuation)
+        io_uring_sqe_set_data64(sqe.ptr, ref.userData)
+        io_uring_submit(ring.ptr)
+
+        disposableContinuation.invokeOnCancellation {
+            io_uring_prep_cancel64(sqe.ptr, ref.userData, flags = 0)
+            io_uring_submit(ring.ptr)
         }
     }
 
-    private fun queueSubmission(sqe: io_uring_sqe, event: SubmissionQueueEvent) {
-        when (event) {
-            SubmissionQueueEvent.NoOp -> io_uring_prep_nop(sqe.ptr)
+    private fun prepSubmissionEvent(
+        continuation: CancellableContinuation<Unit>,
+        sqe: io_uring_sqe,
+        event: SubmissionQueueEvent,
+    ): DisposableContinuation<Unit> = when (event) {
+        SubmissionQueueEvent.NoOp -> {
+            io_uring_prep_nop(sqe.ptr)
+            DisposableContinuation(continuation)
         }
-        io_uring_submit(ring.ptr)
     }
 
     private fun setupWorkerLoop() {
         @OptIn(ExperimentalCoroutinesApi::class)
         val workerThread = newSingleThreadContext("io_uring thread")
-        val channel = Channel<Pair<Int, StableRef<CancellableContinuation<Unit>>>>()
+        val channel = Channel<Pair<Int, StableRef<DisposableContinuation<Unit>>>>()
         scope.launch(context = CoroutineName("io_uring poll job") + workerThread) {
             val cqe = arena.allocPointerTo<io_uring_cqe>()
             while (isActive) {
                 io_uring_wait_cqe(ring.ptr, cqe.ptr)
                 io_uring_cqe_seen(ring.ptr, cqe.value)
                 val hydratedCqe = cqe.pointed!!
-                val ref = hydratedCqe.user_data.toVoidPointer()!!.asStableRef<CancellableContinuation<Unit>>()
+                val ref = hydratedCqe.user_data.toVoidPointer()!!.asStableRef<DisposableContinuation<Unit>>()
                 channel.send(hydratedCqe.res to ref)
             }
         }
