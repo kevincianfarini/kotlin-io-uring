@@ -1,6 +1,6 @@
 package com.kevincianfarini.iouring
 
-public interface Closeable {
+public fun interface Closeable {
     public fun close()
 }
 

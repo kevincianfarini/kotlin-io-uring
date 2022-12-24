@@ -50,24 +50,24 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
         continuation: CancellableContinuation<Unit>,
         sqe: io_uring_sqe,
         event: SubmissionQueueEvent,
-    ): DisposableContinuation<Unit> = when (event) {
+    ): DisposingContinuation<Unit> = when (event) {
         SubmissionQueueEvent.NoOp -> {
             io_uring_prep_nop(sqe.ptr)
-            DisposableContinuation(continuation)
+            DisposingContinuation(continuation)
         }
     }
 
     private fun setupWorkerLoop() {
         @OptIn(ExperimentalCoroutinesApi::class)
         val workerThread = newSingleThreadContext("io_uring thread")
-        val channel = Channel<Pair<Int, StableRef<DisposableContinuation<Unit>>>>()
+        val channel = Channel<Pair<Int, StableRef<DisposingContinuation<Unit>>>>()
         scope.launch(context = CoroutineName("io_uring poll job") + workerThread) {
             val cqe = arena.allocPointerTo<io_uring_cqe>()
             while (isActive) {
                 io_uring_wait_cqe(ring.ptr, cqe.ptr)
                 io_uring_cqe_seen(ring.ptr, cqe.value)
                 val hydratedCqe = cqe.pointed!!
-                val ref = hydratedCqe.user_data.toVoidPointer()!!.asStableRef<DisposableContinuation<Unit>>()
+                val ref = hydratedCqe.user_data.toVoidPointer()!!.asStableRef<DisposingContinuation<Unit>>()
                 channel.send(hydratedCqe.res to ref)
             }
         }

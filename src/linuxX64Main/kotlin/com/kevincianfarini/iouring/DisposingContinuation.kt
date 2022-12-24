@@ -3,7 +3,7 @@ package com.kevincianfarini.iouring
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletionHandler
 
-internal class DisposableContinuation<T>(
+internal class DisposingContinuation<T>(
     private val delegate: CancellableContinuation<T>,
     private vararg val closeables: Closeable,
 ) : CancellableContinuation<T> by delegate {
