@@ -18,51 +18,20 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
         setupWorkerLoop()
     }
 
-    public suspend fun <T : Any> awaitCompletionFor(
-        event: SubmissionQueueEvent<T>,
-    ): T {
-        var sqe: io_uring_sqe? = io_uring_get_sqe(ring.ptr)?.pointed
-        while (sqe == null) {
-            // Loop and yield control to other coroutines. Do this until a call
-            // to `io_uring_get_sqe` results in a usable SQE; this function returns
-            // a NULL pointer if the submission queue is full.
-            yield()
-            sqe = io_uring_get_sqe(ring.ptr)?.pointed
-        }
-
-        return queueSubmission(sqe, event)
-    }
-
-    private suspend fun <T : Any> queueSubmission(
-        sqe: io_uring_sqe,
-        event: SubmissionQueueEvent<T>
-    ): T = suspendCancellableCoroutine { cont ->
-        val disposableContinuation = prepSubmissionEvent(cont, sqe, event)
-        val ref = StableRef.create(disposableContinuation)
-        io_uring_sqe_set_data64(sqe.ptr, ref.userData)
-        io_uring_submit(ring.ptr)
-
-        disposableContinuation.invokeOnCancellation {
-            io_uring_prep_cancel64(sqe.ptr, ref.userData, flags = 0)
+    public suspend fun noOp() {
+        val sqe = ring.getSubmissionQueueEvent()
+        return suspendCancellableCoroutine { cont ->
+            val ref = StableRef.create(cont)
+            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
+            cont.registerIOUringCancellation(ring, sqe, ref)
             io_uring_submit(ring.ptr)
-        }
-    }
-
-    private fun <T : Any> prepSubmissionEvent(
-        continuation: CancellableContinuation<T>,
-        sqe: io_uring_sqe,
-        event: SubmissionQueueEvent<T>,
-    ): DisposingContinuation<T> = when (event) {
-        SubmissionQueueEvent.NoOp -> {
-            io_uring_prep_nop(sqe.ptr)
-            DisposingContinuation(continuation)
         }
     }
 
     private fun setupWorkerLoop() {
         @OptIn(ExperimentalCoroutinesApi::class)
         val workerThread = newSingleThreadContext("io_uring thread")
-        val channel = Channel<Pair<Int, StableRef<DisposingContinuation<Unit>>>>()
+        val channel = Channel<Pair<Int, StableRef<CancellableContinuation<Unit>>>>()
         scope.launch(context = CoroutineName("io_uring poll job") + workerThread) {
             val cqe = arena.allocPointerTo<io_uring_cqe>()
             while (isActive) {
@@ -106,4 +75,25 @@ private inline fun UInt.isPowerOf2(): Boolean {
 private val StableRef<*>.userData: ULong get() = asCPointer().rawValue.toLong().toULong()
 private fun ULong.toVoidPointer(): COpaquePointer? {
     return toLong().toCPointer()
+}
+
+private inline fun <T : Any> CancellableContinuation<T>.registerIOUringCancellation(
+    ring: io_uring,
+    sqe: io_uring_sqe,
+    ref: StableRef<*>,
+) = invokeOnCancellation {
+    io_uring_prep_cancel64(sqe.ptr, ref.userData, flags = 0)
+    io_uring_submit(ring.ptr)
+}
+
+private suspend inline fun io_uring.getSubmissionQueueEvent(): io_uring_sqe {
+    var sqe: io_uring_sqe? = io_uring_get_sqe(ptr)?.pointed
+    while (sqe == null) {
+        // Loop and yield control to other coroutines. Do this until a call
+        // to `io_uring_get_sqe` results in a usable SQE; this function returns
+        // a NULL pointer if the submission queue is full.
+        yield()
+        sqe = io_uring_get_sqe(ptr)?.pointed
+    }
+    return sqe
 }
