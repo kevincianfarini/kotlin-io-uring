@@ -18,7 +18,9 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
         setupWorkerLoop()
     }
 
-    public suspend fun awaitCompletionFor(event: SubmissionQueueEvent) {
+    public suspend fun <T : Any> awaitCompletionFor(
+        event: SubmissionQueueEvent<T>,
+    ): T {
         var sqe: io_uring_sqe? = io_uring_get_sqe(ring.ptr)?.pointed
         while (sqe == null) {
             // Loop and yield control to other coroutines. Do this until a call
@@ -28,13 +30,13 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
             sqe = io_uring_get_sqe(ring.ptr)?.pointed
         }
 
-        queueSubmission(sqe, event)
+        return queueSubmission(sqe, event)
     }
 
-    private suspend fun queueSubmission(
+    private suspend fun <T : Any> queueSubmission(
         sqe: io_uring_sqe,
-        event: SubmissionQueueEvent
-    ) = suspendCancellableCoroutine { cont ->
+        event: SubmissionQueueEvent<T>
+    ): T = suspendCancellableCoroutine { cont ->
         val disposableContinuation = prepSubmissionEvent(cont, sqe, event)
         val ref = StableRef.create(disposableContinuation)
         io_uring_sqe_set_data64(sqe.ptr, ref.userData)
@@ -46,11 +48,11 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
         }
     }
 
-    private fun prepSubmissionEvent(
-        continuation: CancellableContinuation<Unit>,
+    private fun <T : Any> prepSubmissionEvent(
+        continuation: CancellableContinuation<T>,
         sqe: io_uring_sqe,
-        event: SubmissionQueueEvent,
-    ): DisposingContinuation<Unit> = when (event) {
+        event: SubmissionQueueEvent<T>,
+    ): DisposingContinuation<T> = when (event) {
         SubmissionQueueEvent.NoOp -> {
             io_uring_prep_nop(sqe.ptr)
             DisposingContinuation(continuation)
