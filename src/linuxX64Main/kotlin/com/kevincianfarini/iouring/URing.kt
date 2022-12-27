@@ -107,14 +107,6 @@ public class URing(
     }
 }
 
-public value class QueueDepth(public val depth: UInt) {
-    init { require(depth.isPowerOf2() && depth <= 32_788u) }
-}
-
-private inline fun UInt.isPowerOf2(): Boolean {
-    return (this != 0u) && (this and (this - 1u) == 0u)
-}
-
 private val StableRef<*>.userData: ULong get() = asCPointer().rawValue.toLong().toULong()
 private fun ULong.toVoidPointer(): COpaquePointer? {
     return toLong().toCPointer()
