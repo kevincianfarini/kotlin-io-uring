@@ -65,18 +65,30 @@ public class URing(
         }
     }
 
+    public suspend fun close(fileDescriptor: Int) {
+        val sqe = ring.getSubmissionQueueEvent()
+        return suspendCancellableCoroutine { cont ->
+            val continuation = UnitContinuation(cont)
+            val ref = StableRef.create(continuation)
+            io_uring_prep_close(sqe = sqe.ptr, fd = fileDescriptor)
+            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
+            continuation.registerIOUringCancellation(ring, sqe, ref)
+            io_uring_submit(ring.ptr)
+        }
+    }
+
     private fun setupWorkerLoop() {
         @OptIn(ExperimentalCoroutinesApi::class)
         val workerThread = newSingleThreadContext("io_uring thread")
         scope.launch(context = CoroutineName("io_uring poll job") + workerThread) {
             memScoped {
                 val cqe = allocPointerTo<io_uring_cqe>()
-                while (isActive) { loopOnce(cqe) }
+                while (isActive) { resumeContinuation(cqe) }
             }
         }
     }
 
-    private fun loopOnce(cqe: CPointerVar<io_uring_cqe>) {
+    private fun resumeContinuation(cqe: CPointerVar<io_uring_cqe>) {
         io_uring_wait_cqe(ring.ptr, cqe.ptr)
         io_uring_cqe_seen(ring.ptr, cqe.value)
         val hydratedCqe = cqe.pointed!!
