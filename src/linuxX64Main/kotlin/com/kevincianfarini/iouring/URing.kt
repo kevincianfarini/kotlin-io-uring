@@ -9,12 +9,12 @@ import kotlin.coroutines.resumeWithException
 
 public class URing(
     queueDepth: QueueDepth,
-    ringFlags: UInt
+    ringFlags: UInt,
+    private val heap: NativeFreeablePlacement = nativeHeap,
 ) : Closeable {
 
     private val scope = CoroutineScope(Job())
-    private val arena = Arena()
-    private val ring: io_uring = arena.alloc()
+    private val ring: io_uring = heap.alloc()
 
     init {
         io_uring_queue_init(queueDepth.depth, ring.ptr, ringFlags)
@@ -42,17 +42,18 @@ public class URing(
     ): Int {
         val sqe = ring.getSubmissionQueueEvent()
         return suspendCancellableCoroutine { cont ->
-            val pathPointer = filePath.utf8.getPointer(arena)
-            val continuation = IntContinuation(
-                delegate = cont,
-                Closeable { /* free path pointer */  },
-            )
-            val ref = StableRef.create(continuation)
-            val how = arena.alloc<open_how> {
+            val pathPointer = filePath.utf8.getPointer(heap)
+            val how = heap.alloc<open_how> {
                 this.flags = flags.convert()
                 this.mode = mode.convert()
                 this.resolve = resolve.convert()
             }
+            val continuation = IntContinuation(cont) {
+                heap.free(how)
+                heap.free(pathPointer)
+            }
+
+            val ref = StableRef.create(continuation)
             io_uring_prep_openat2(
                 sqe = sqe.ptr,
                 dfd = directoryFileDescriptor,
@@ -70,16 +71,18 @@ public class URing(
         val workerThread = newSingleThreadContext("io_uring thread")
         val channel = Channel<Pair<Int, StableRef<DisposingContinuation<*>>>>()
         scope.launch(context = CoroutineName("io_uring poll job") + workerThread) {
-            val cqe = arena.allocPointerTo<io_uring_cqe>()
-            while (isActive) {
-                io_uring_wait_cqe(ring.ptr, cqe.ptr)
-                io_uring_cqe_seen(ring.ptr, cqe.value)
-                val hydratedCqe = cqe.pointed!!
-                val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
-                    "No user data found in completion queue entry."
+            memScoped {
+                val cqe = allocPointerTo<io_uring_cqe>()
+                while (isActive) {
+                    io_uring_wait_cqe(ring.ptr, cqe.ptr)
+                    io_uring_cqe_seen(ring.ptr, cqe.value)
+                    val hydratedCqe = cqe.pointed!!
+                    val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
+                        "No user data found in completion queue entry."
+                    }
+                    val ref = userDataPointer.asStableRef<DisposingContinuation<*>>()
+                    channel.send(hydratedCqe.res to ref)
                 }
-                val ref = userDataPointer.asStableRef<DisposingContinuation<*>>()
-                channel.send(hydratedCqe.res to ref)
             }
         }
 
@@ -109,7 +112,7 @@ public class URing(
     override fun close() {
         scope.cancel()
         io_uring_queue_exit(ring.ptr)
-        arena.clear()
+        heap.free(ring.ptr)
     }
 }
 
@@ -146,3 +149,7 @@ private suspend inline fun io_uring.getSubmissionQueueEvent(): io_uring_sqe {
     }
     return sqe
 }
+
+private fun <T : CVariable> CValues<T>.getPointer(
+    placement: NativeFreeablePlacement
+): CPointer<T> = place(interpretCPointer(placement.alloc(size, align).rawPtr)!!)
