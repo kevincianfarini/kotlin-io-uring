@@ -71,32 +71,21 @@ public class URing(
         scope.launch(context = CoroutineName("io_uring poll job") + workerThread) {
             memScoped {
                 val cqe = allocPointerTo<io_uring_cqe>()
-                while (isActive) {
-                    io_uring_wait_cqe(ring.ptr, cqe.ptr)
-                    io_uring_cqe_seen(ring.ptr, cqe.value)
-                    val hydratedCqe = cqe.pointed!!
-                    val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
-                        "No user data found in completion queue entry."
-                    }
-                    val res = hydratedCqe.res
-                    userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
-                        when (cont) {
-                            is IntContinuation -> when {
-                                res < 0 -> cont.resumeWithException(
-                                    IllegalStateException("Error code $res.")
-                                )
-                                else -> cont.resume(res)
-                            }
-                            is UnitContinuation -> when (res) {
-                                0 -> cont.resume(Unit)
-                                else -> cont.resumeWithException(
-                                    IllegalStateException("io_uring error number $res.")
-                                )
-                            }
-                        }
-                    }
-                }
+                while (isActive) { loopOnce(cqe) }
             }
+        }
+    }
+
+    private fun loopOnce(cqe: CPointerVar<io_uring_cqe>) {
+        io_uring_wait_cqe(ring.ptr, cqe.ptr)
+        io_uring_cqe_seen(ring.ptr, cqe.value)
+        val hydratedCqe = cqe.pointed!!
+        val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
+            "No user data found in completion queue entry."
+        }
+        val res = hydratedCqe.res
+        userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
+            cont.resumeWithIntRes(res)
         }
     }
 
@@ -141,4 +130,19 @@ private inline fun <T : Any> StableRef<T>.use(block: (T) -> Unit) = try {
     block(get())
 } finally {
     dispose()
+}
+
+private inline fun DisposingContinuation<*>.resumeWithIntRes(res: Int) = when (this) {
+    is IntContinuation -> when {
+        res < 0 -> resumeWithException(
+            IllegalStateException("Error code $res.")
+        )
+        else -> resume(res)
+    }
+    is UnitContinuation -> when (res) {
+        0 -> resume(Unit)
+        else -> resumeWithException(
+            IllegalStateException("io_uring error number $res.")
+        )
+    }
 }
