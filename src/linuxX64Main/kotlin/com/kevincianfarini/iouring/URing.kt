@@ -2,7 +2,6 @@ package com.kevincianfarini.iouring
 
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import liburing.*
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -69,7 +68,6 @@ public class URing(
     private fun setupWorkerLoop() {
         @OptIn(ExperimentalCoroutinesApi::class)
         val workerThread = newSingleThreadContext("io_uring thread")
-        val channel = Channel<Pair<Int, StableRef<DisposingContinuation<*>>>>()
         scope.launch(context = CoroutineName("io_uring poll job") + workerThread) {
             memScoped {
                 val cqe = allocPointerTo<io_uring_cqe>()
@@ -80,29 +78,22 @@ public class URing(
                     val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
                         "No user data found in completion queue entry."
                     }
-                    val ref = userDataPointer.asStableRef<DisposingContinuation<*>>()
-                    channel.send(hydratedCqe.res to ref)
-                }
-            }
-        }
-
-        scope.launch {
-            for ((res, ref) in channel) {
-                val continuation = ref.get()
-                ref.dispose()
-
-                when (continuation) {
-                    is IntContinuation -> when {
-                        res < 0 -> continuation.resumeWithException(
-                            IllegalStateException("Error code $res.")
-                        )
-                        else -> continuation.resume(res)
-                    }
-                    is UnitContinuation -> when (res) {
-                        0 -> continuation.resume(Unit)
-                        else -> continuation.resumeWithException(
-                            IllegalStateException("io_uring error number $res.")
-                        )
+                    val res = hydratedCqe.res
+                    userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
+                        when (cont) {
+                            is IntContinuation -> when {
+                                res < 0 -> cont.resumeWithException(
+                                    IllegalStateException("Error code $res.")
+                                )
+                                else -> cont.resume(res)
+                            }
+                            is UnitContinuation -> when (res) {
+                                0 -> cont.resume(Unit)
+                                else -> cont.resumeWithException(
+                                    IllegalStateException("io_uring error number $res.")
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -153,3 +144,9 @@ private suspend inline fun io_uring.getSubmissionQueueEvent(): io_uring_sqe {
 private fun <T : CVariable> CValues<T>.getPointer(
     placement: NativeFreeablePlacement
 ): CPointer<T> = place(interpretCPointer(placement.alloc(size, align).rawPtr)!!)
+
+private inline fun <T : Any> StableRef<T>.use(block: (T) -> Unit) = try {
+    block(get())
+} finally {
+    dispose()
+}
