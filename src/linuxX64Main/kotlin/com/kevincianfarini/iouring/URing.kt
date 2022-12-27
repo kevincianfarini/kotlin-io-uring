@@ -7,7 +7,10 @@ import liburing.*
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
+public class URing(
+    queueDepth: QueueDepth,
+    ringFlags: UInt
+) : Closeable {
 
     private val scope = CoroutineScope(Job())
     private val arena = Arena()
@@ -21,9 +24,43 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
     public suspend fun noOp() {
         val sqe = ring.getSubmissionQueueEvent()
         return suspendCancellableCoroutine { cont ->
-            val ref = StableRef.create(cont)
+            val continuation = UnitContinuation(cont)
+            val ref = StableRef.create(continuation)
+            io_uring_prep_nop(sqe.ptr)
             io_uring_sqe_set_data64(sqe.ptr, ref.userData)
-            cont.registerIOUringCancellation(ring, sqe, ref)
+            continuation.registerIOUringCancellation(ring, sqe, ref)
+            io_uring_submit(ring.ptr)
+        }
+    }
+
+    public suspend fun open(
+        filePath: String,
+        directoryFileDescriptor: Int = AT_FDCWD,
+        flags: Int = 0,
+        mode: Int = 0,
+        resolve: Int = 0,
+    ): Int {
+        val sqe = ring.getSubmissionQueueEvent()
+        return suspendCancellableCoroutine { cont ->
+            val pathPointer = filePath.utf8.getPointer(arena)
+            val continuation = IntContinuation(
+                delegate = cont,
+                Closeable { /* free path pointer */  },
+            )
+            val ref = StableRef.create(continuation)
+            val how = arena.alloc<open_how> {
+                this.flags = flags.convert()
+                this.mode = mode.convert()
+                this.resolve = resolve.convert()
+            }
+            io_uring_prep_openat2(
+                sqe = sqe.ptr,
+                dfd = directoryFileDescriptor,
+                path = pathPointer,
+                how = how.ptr,
+            )
+            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
+            continuation.registerIOUringCancellation(ring, sqe, ref)
             io_uring_submit(ring.ptr)
         }
     }
@@ -31,14 +68,17 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
     private fun setupWorkerLoop() {
         @OptIn(ExperimentalCoroutinesApi::class)
         val workerThread = newSingleThreadContext("io_uring thread")
-        val channel = Channel<Pair<Int, StableRef<CancellableContinuation<Unit>>>>()
+        val channel = Channel<Pair<Int, StableRef<DisposingContinuation<*>>>>()
         scope.launch(context = CoroutineName("io_uring poll job") + workerThread) {
             val cqe = arena.allocPointerTo<io_uring_cqe>()
             while (isActive) {
                 io_uring_wait_cqe(ring.ptr, cqe.ptr)
                 io_uring_cqe_seen(ring.ptr, cqe.value)
                 val hydratedCqe = cqe.pointed!!
-                val ref = hydratedCqe.user_data.toVoidPointer()!!.asStableRef<DisposingContinuation<Unit>>()
+                val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
+                    "No user data found in completion queue entry."
+                }
+                val ref = userDataPointer.asStableRef<DisposingContinuation<*>>()
                 channel.send(hydratedCqe.res to ref)
             }
         }
@@ -47,11 +87,20 @@ public class URing(queueDepth: QueueDepth, ringFlags: UInt) : Closeable {
             for ((res, ref) in channel) {
                 val continuation = ref.get()
                 ref.dispose()
-                when (res) {
-                    0 -> continuation.resume(Unit)
-                    else -> continuation.resumeWithException(
-                        IllegalStateException("io_uring error number $res.")
-                    )
+
+                when (continuation) {
+                    is IntContinuation -> when {
+                        res < 0 -> continuation.resumeWithException(
+                            IllegalStateException("Error code $res.")
+                        )
+                        else -> continuation.resume(res)
+                    }
+                    is UnitContinuation -> when (res) {
+                        0 -> continuation.resume(Unit)
+                        else -> continuation.resumeWithException(
+                            IllegalStateException("io_uring error number $res.")
+                        )
+                    }
                 }
             }
         }

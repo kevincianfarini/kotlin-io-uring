@@ -2,8 +2,9 @@ package com.kevincianfarini.iouring
 
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletionHandler
+import platform.posix.close
 
-internal class DisposingContinuation<T>(
+internal sealed class DisposingContinuation<T>(
     private val delegate: CancellableContinuation<T>,
     private vararg val closeables: Closeable,
 ) : CancellableContinuation<T> by delegate {
@@ -27,3 +28,13 @@ internal class DisposingContinuation<T>(
         registeredCancellationHandler = handler
     }
 }
+
+internal class IntContinuation(
+    delegate: CancellableContinuation<Int>,
+    vararg closeables: Closeable,
+): DisposingContinuation<Int>(delegate = delegate, closeables = closeables)
+
+internal class UnitContinuation(
+    delegate: CancellableContinuation<Unit>,
+    vararg closeables: Closeable,
+) : DisposingContinuation<Unit>(delegate = delegate, closeables = closeables)
