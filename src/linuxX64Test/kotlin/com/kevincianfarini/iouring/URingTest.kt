@@ -1,5 +1,6 @@
 package com.kevincianfarini.iouring
 
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import liburing.*
 import kotlin.test.*
@@ -40,6 +41,26 @@ class URingTest {
             assertEquals(
                 expected = "hello world!",
                 actual = buffer.decodeToString(endIndex = bytesRead),
+            )
+        }
+    }
+
+    @Test fun `URing vectorWrite writes buffer contents into file`() = runBlocking {
+        URing(QueueDepth(2u), 0u).use { ring ->
+            val fd = ring.open(
+                filePath = "./src/linuxX64Test/resources",
+                flags = O_TMPFILE or O_RDWR,
+                mode = S_IRWXO,
+            )
+            val buffer = "goodbye world!".encodeToByteArray()
+            val bytesWritten = ring.vectorWrite(fd, buffer)
+            assertEquals(expected = buffer.size, actual = bytesWritten)
+
+            val readBuffer = ByteArray(100)
+            val bytesRead = ring.vectorRead(fd, readBuffer)
+            assertEquals(
+                expected = "goodbye world!",
+                actual = readBuffer.decodeToString(endIndex = bytesRead),
             )
         }
     }

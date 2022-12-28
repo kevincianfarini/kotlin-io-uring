@@ -86,11 +86,43 @@ public class URing(
         val sqe = ring.getSubmissionQueueEvent()
         return suspendCancellableCoroutine { cont ->
             val pinnedBuffers = buffers.map { it.pin() }
-            val iovecs = heap.allocArray<iovec>(buffers.size) {index ->
+            val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
                 iov_len = pinnedBuffers[index].get().size.convert()
                 iov_base = pinnedBuffers[index].addressOf(0)
             }
             io_uring_prep_readv2(
+                sqe = sqe.ptr,
+                fd = fileDescriptor,
+                iovecs = iovecs,
+                nr_vecs = buffers.size.convert(),
+                offset = offset,
+                flags = flags,
+            )
+            val continuation = IntContinuation(cont) {
+                pinnedBuffers.forEach { it.unpin() }
+                heap.free(iovecs)
+            }
+            val ref = StableRef.create(continuation)
+            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
+            continuation.registerIOUringCancellation(ring, sqe, ref)
+            io_uring_submit(ring.ptr)
+        }
+    }
+
+    public suspend fun vectorWrite(
+        fileDescriptor: Int,
+        vararg buffers: ByteArray,
+        offset: ULong = 0u,
+        flags: Int = 0,
+    ): Int {
+        val sqe = ring.getSubmissionQueueEvent()
+        return suspendCancellableCoroutine { cont ->
+            val pinnedBuffers = buffers.map { it.pin() }
+            val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
+                iov_len = pinnedBuffers[index].get().size.convert()
+                iov_base = pinnedBuffers[index].addressOf(0)
+            }
+            io_uring_prep_writev2(
                 sqe = sqe.ptr,
                 fd = fileDescriptor,
                 iovecs = iovecs,
