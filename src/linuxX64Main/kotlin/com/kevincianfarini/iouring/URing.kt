@@ -20,26 +20,47 @@ public class URing(
         setupWorkerLoop()
     }
 
-    public suspend fun noOp() {
-        val sqe = ring.getSubmissionQueueEvent()
+    /**
+     * Acquire a [SubmissionQueueEntry] to submit requests to io_uring.
+     * This function will return null when the submission queue is full,
+     * indicating that a [submit] system call should be made to begin
+     * processing queued requests.
+     */
+    public fun getSubmissionQueueEntry(): SubmissionQueueEntry? {
+        return io_uring_get_sqe(ring.ptr)?.pointed?.let(::SubmissionQueueEntry)
+    }
+
+    /**
+     * Submit the queued entries to the submission queue. This will being
+     * processing and resuming coroutines running suspending io_uring operations.
+     *
+     * This performs an underlying system call and is therefore an expensive
+     * operation.
+     */
+    public fun submit() {
+        val ret = io_uring_submit(ring.ptr)
+        check(ret > -1) { "Submission error $ret." }
+    }
+
+    public suspend fun noOp(entry: SubmissionQueueEntry) {
         return suspendCancellableCoroutine { cont ->
             val continuation = UnitContinuation(cont)
             val ref = StableRef.create(continuation)
-            io_uring_prep_nop(sqe.ptr)
-            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
-            continuation.registerIOUringCancellation(ring, sqe, ref)
+            io_uring_prep_nop(entry.sqe.ptr)
+            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
     }
 
     public suspend fun open(
+        entry: SubmissionQueueEntry,
         filePath: String,
         directoryFileDescriptor: Int = AT_FDCWD,
         flags: Int = 0,
         mode: Int = 0,
         resolve: Int = 0,
     ): Int {
-        val sqe = ring.getSubmissionQueueEvent()
         return suspendCancellableCoroutine { cont ->
             val pathPointer = filePath.utf8.getPointer(heap)
             val how = heap.alloc<open_how> {
@@ -54,36 +75,38 @@ public class URing(
 
             val ref = StableRef.create(continuation)
             io_uring_prep_openat2(
-                sqe = sqe.ptr,
+                sqe = entry.sqe.ptr,
                 dfd = directoryFileDescriptor,
                 path = pathPointer,
                 how = how.ptr,
             )
-            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
-            continuation.registerIOUringCancellation(ring, sqe, ref)
+            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
     }
 
-    public suspend fun close(fileDescriptor: Int) {
-        val sqe = ring.getSubmissionQueueEvent()
+    public suspend fun close(
+        entry: SubmissionQueueEntry,
+        fileDescriptor: Int
+    ) {
         return suspendCancellableCoroutine { cont ->
             val continuation = UnitContinuation(cont)
             val ref = StableRef.create(continuation)
-            io_uring_prep_close(sqe = sqe.ptr, fd = fileDescriptor)
-            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
-            continuation.registerIOUringCancellation(ring, sqe, ref)
+            io_uring_prep_close(sqe = entry.sqe.ptr, fd = fileDescriptor)
+            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
     }
 
     public suspend fun vectorRead(
+        entry: SubmissionQueueEntry,
         fileDescriptor: Int,
         vararg buffers: ByteArray,
         offset: ULong = 0u,
         flags: Int = 0,
     ): Int {
-        val sqe = ring.getSubmissionQueueEvent()
         return suspendCancellableCoroutine { cont ->
             val pinnedBuffers = buffers.map { it.pin() }
             val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
@@ -91,7 +114,7 @@ public class URing(
                 iov_base = pinnedBuffers[index].addressOf(0)
             }
             io_uring_prep_readv2(
-                sqe = sqe.ptr,
+                sqe = entry.sqe.ptr,
                 fd = fileDescriptor,
                 iovecs = iovecs,
                 nr_vecs = buffers.size.convert(),
@@ -103,19 +126,19 @@ public class URing(
                 heap.free(iovecs)
             }
             val ref = StableRef.create(continuation)
-            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
-            continuation.registerIOUringCancellation(ring, sqe, ref)
+            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
     }
 
     public suspend fun vectorWrite(
+        entry: SubmissionQueueEntry,
         fileDescriptor: Int,
         vararg buffers: ByteArray,
         offset: ULong = 0u,
         flags: Int = 0,
     ): Int {
-        val sqe = ring.getSubmissionQueueEvent()
         return suspendCancellableCoroutine { cont ->
             val pinnedBuffers = buffers.map { it.pin() }
             val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
@@ -123,7 +146,7 @@ public class URing(
                 iov_base = pinnedBuffers[index].addressOf(0)
             }
             io_uring_prep_writev2(
-                sqe = sqe.ptr,
+                sqe = entry.sqe.ptr,
                 fd = fileDescriptor,
                 iovecs = iovecs,
                 nr_vecs = buffers.size.convert(),
@@ -135,8 +158,8 @@ public class URing(
                 heap.free(iovecs)
             }
             val ref = StableRef.create(continuation)
-            io_uring_sqe_set_data64(sqe.ptr, ref.userData)
-            continuation.registerIOUringCancellation(ring, sqe, ref)
+            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
     }
@@ -184,18 +207,6 @@ private inline fun <T : Any> CancellableContinuation<T>.registerIOUringCancellat
 ) = invokeOnCancellation {
     io_uring_prep_cancel64(sqe.ptr, ref.userData, flags = 0)
     io_uring_submit(ring.ptr)
-}
-
-private suspend inline fun io_uring.getSubmissionQueueEvent(): io_uring_sqe {
-    var sqe: io_uring_sqe? = io_uring_get_sqe(ptr)?.pointed
-    while (sqe == null) {
-        // Loop and yield control to other coroutines. Do this until a call
-        // to `io_uring_get_sqe` results in a usable SQE; this function returns
-        // a NULL pointer if the submission queue is full.
-        yield()
-        sqe = io_uring_get_sqe(ptr)?.pointed
-    }
-    return sqe
 }
 
 private fun <T : CVariable> CValues<T>.getPointer(
