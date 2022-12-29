@@ -7,14 +7,14 @@ import kotlin.test.*
 class URingTest {
 
     @Test fun `URing no-op returns`() = runBlocking {
-        URing(QueueDepth(2u), 0u).use { ring ->
+        URing(QueueDepth(2u), 0u, this).use { ring ->
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             ring.noOp(entry)
         }
     }
 
     @Test fun `URing opens file`() = runBlocking {
-        URing(QueueDepth(2u), 0u).use { ring ->
+        URing(QueueDepth(2u), 0u, this).use { ring ->
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             val fd = ring.open(
                 entry = entry,
@@ -25,7 +25,7 @@ class URingTest {
     }
 
     @Test fun `URing closes file descriptor`() = runBlocking {
-        URing(QueueDepth(2u), 0u).use { ring ->
+        URing(QueueDepth(2u), 0u, this).use { ring ->
             val openEntry = checkNotNull(ring.getSubmissionQueueEntry())
             val fd = ring.open(
                 entry = openEntry,
@@ -37,14 +37,14 @@ class URingTest {
     }
 
     @Test fun `URing fails to close bad file descriptor`() = runBlocking {
-        URing(QueueDepth(2u), 0u).use { ring ->
+        URing(QueueDepth(2u), 0u, this).use { ring ->
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             assertFailsWith<IllegalStateException> { ring.close(entry, -1) }
         }
     }
 
     @Test fun `URing vectorRead reads into buffer`() = runBlocking {
-        URing(QueueDepth(2u), 0u).use { ring ->
+        URing(QueueDepth(2u), 0u, this).use { ring ->
             val openEntry = checkNotNull(ring.getSubmissionQueueEntry())
             val fd = ring.open(openEntry, filePath = "./src/linuxX64Test/resources/hello.txt")
             val buffer = ByteArray(100)
@@ -59,7 +59,7 @@ class URingTest {
     }
 
     @Test fun `URing vectorWrite writes buffer contents into file`() = runBlocking {
-        URing(QueueDepth(2u), 0u).use { ring ->
+        URing(QueueDepth(2u), 0u, this).use { ring ->
             val openEntry = checkNotNull(ring.getSubmissionQueueEntry())
             val fd = ring.open(
                 entry = openEntry,

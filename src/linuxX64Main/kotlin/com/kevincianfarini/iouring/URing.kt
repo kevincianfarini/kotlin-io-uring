@@ -9,15 +9,21 @@ import kotlin.coroutines.resumeWithException
 public class URing(
     queueDepth: QueueDepth,
     ringFlags: UInt,
+    scope: CoroutineScope,
     private val heap: NativeFreeablePlacement = nativeHeap,
 ) : Closeable {
 
-    private val scope = CoroutineScope(Job())
     private val ring: io_uring = heap.alloc()
+    private val job: Job
 
     init {
         io_uring_queue_init(queueDepth.depth, ring.ptr, ringFlags)
-        setupWorkerLoop()
+        job = scope.launch { poll() }.apply {
+            invokeOnCompletion {
+                io_uring_queue_exit(ring.ptr)
+                heap.free(ring.ptr)
+            }
+        }
     }
 
     /**
@@ -164,34 +170,42 @@ public class URing(
         }
     }
 
-    private fun setupWorkerLoop() {
+    private suspend fun poll() {
         @OptIn(ExperimentalCoroutinesApi::class)
         val workerThread = newSingleThreadContext("io_uring thread")
-        scope.launch(context = CoroutineName("io_uring poll job") + workerThread) {
+        withContext(context = CoroutineName("io_uring poll job") + workerThread) {
             memScoped {
                 val cqe = allocPointerTo<io_uring_cqe>()
-                while (isActive) { resumeContinuation(cqe) }
+
+                // TODO(kcianfarini) We wouldn't have to use a random timeout here and spin every
+                //                   100ms if Kotlin Native had a runInterruptale equivalent.
+                val timeout = alloc<__kernel_timespec> {
+                    tv_nsec = 100_000_000L
+                }
+                while (isActive) { resumeContinuation(cqe, timeout) }
             }
         }
     }
 
-    private fun resumeContinuation(cqe: CPointerVar<io_uring_cqe>) {
-        io_uring_wait_cqe(ring.ptr, cqe.ptr)
-        io_uring_cqe_seen(ring.ptr, cqe.value)
-        val hydratedCqe = cqe.pointed!!
-        val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
-            "No user data found in completion queue entry."
-        }
-        val res = hydratedCqe.res
-        userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
-            cont.resumeWithIntRes(res)
+    private fun resumeContinuation(cqe: CPointerVar<io_uring_cqe>, timeout: __kernel_timespec) {
+        when (io_uring_wait_cqe_timeout(ring.ptr, cqe.ptr, timeout.ptr)) {
+            0 -> {
+                io_uring_cqe_seen(ring.ptr, cqe.value)
+                val hydratedCqe = cqe.pointed!!
+                val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
+                    "No user data found in completion queue entry."
+                }
+                val res = hydratedCqe.res
+                userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
+                    cont.resumeWithIntRes(res)
+                }
+            }
+            else -> Unit
         }
     }
 
     override fun close() {
-        scope.cancel()
-        io_uring_queue_exit(ring.ptr)
-        heap.free(ring.ptr)
+        job.cancel()
     }
 }
 
