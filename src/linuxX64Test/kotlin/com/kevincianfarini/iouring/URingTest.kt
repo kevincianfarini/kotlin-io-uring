@@ -6,10 +6,40 @@ import kotlin.test.*
 
 class URingTest {
 
+    @Test fun `URing returns submission queue entry`() = runBlocking {
+        URing(QueueDepth(2u), 0u, this).use { ring ->
+            assertNotNull(ring.getSubmissionQueueEntry())
+        }
+    }
+
+    @Test fun `URing returns null submission queue entry when full`() = runBlocking {
+        URing(QueueDepth(2u), 0u, this).use { ring ->
+            assertNotNull(ring.getSubmissionQueueEntry())
+            assertNotNull(ring.getSubmissionQueueEntry())
+            assertNull(ring.getSubmissionQueueEntry())
+        }
+    }
+
+    @Test fun `URing getSubmissionQueueEntry fails after close`() {
+        runBlocking {
+            val ring = URing(QueueDepth(2u), 0u, this).also { it.close() }
+            assertFailsWith<IllegalStateException> { ring.getSubmissionQueueEntry() }
+        }
+    }
+
     @Test fun `URing no-op returns`() = runBlocking {
         URing(QueueDepth(2u), 0u, this).use { ring ->
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             ring.noOp(entry)
+        }
+    }
+
+    @Test fun `URing no-op fails after close`() {
+        runBlocking {
+            val ring = URing(QueueDepth(2u), 0u, this)
+            val entry = checkNotNull(ring.getSubmissionQueueEntry())
+            ring.close()
+            assertFailsWith<IllegalStateException> { ring.noOp(entry) }
         }
     }
 
@@ -24,6 +54,17 @@ class URingTest {
         }
     }
 
+    @Test fun `URing fails to open file after ring close`() {
+        runBlocking {
+            val ring = URing(QueueDepth(2u), 0u, this)
+            val entry = checkNotNull(ring.getSubmissionQueueEntry())
+            ring.close()
+            assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
+                ring.open(entry, filePath = "./src/linuxX64Test/resources/hello.txt")
+            }
+        }
+    }
+
     @Test fun `URing closes file descriptor`() = runBlocking {
         URing(QueueDepth(2u), 0u, this).use { ring ->
             val openEntry = checkNotNull(ring.getSubmissionQueueEntry())
@@ -33,6 +74,17 @@ class URingTest {
             )
             val closeEntry = checkNotNull(ring.getSubmissionQueueEntry())
             ring.close(closeEntry, fd)
+        }
+    }
+
+    @Test fun `URing fails to close file descriptor after ring close`() {
+        runBlocking {
+            val ring = URing(QueueDepth(2u), 0u, this)
+            val entry = checkNotNull(ring.getSubmissionQueueEntry())
+            ring.close()
+            assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
+                ring.close(entry, fileDescriptor = -1)
+            }
         }
     }
 
@@ -58,6 +110,17 @@ class URingTest {
         }
     }
 
+    @Test fun `URing vectorRead fails after ring close`() {
+        runBlocking {
+            val ring = URing(QueueDepth(2u), 0u, this)
+            val entry = checkNotNull(ring.getSubmissionQueueEntry())
+            ring.close()
+            assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
+                ring.vectorRead(entry, fileDescriptor = -1)
+            }
+        }
+    }
+
     @Test fun `URing vectorWrite writes buffer contents into file`() = runBlocking {
         URing(QueueDepth(2u), 0u, this).use { ring ->
             val openEntry = checkNotNull(ring.getSubmissionQueueEntry())
@@ -79,6 +142,17 @@ class URingTest {
                 expected = "goodbye world!",
                 actual = readBuffer.decodeToString(endIndex = bytesRead),
             )
+        }
+    }
+
+    @Test fun `URing vectorWrite fails after ring close`() {
+        runBlocking {
+            val ring = URing(QueueDepth(2u), 0u, this)
+            val entry = checkNotNull(ring.getSubmissionQueueEntry())
+            ring.close()
+            assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
+                ring.vectorWrite(entry, fileDescriptor = -1)
+            }
         }
     }
 }

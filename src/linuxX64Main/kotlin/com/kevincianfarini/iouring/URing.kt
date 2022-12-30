@@ -33,6 +33,7 @@ public class URing(
      * processing queued requests.
      */
     public fun getSubmissionQueueEntry(): SubmissionQueueEntry? {
+        ensureActive()
         return io_uring_get_sqe(ring.ptr)?.pointed?.let(::SubmissionQueueEntry)
     }
 
@@ -44,11 +45,13 @@ public class URing(
      * operation.
      */
     public fun submit() {
+        ensureActive()
         val ret = io_uring_submit(ring.ptr)
         check(ret > -1) { "Submission error $ret." }
     }
 
     public suspend fun noOp(entry: SubmissionQueueEntry) {
+        ensureActive()
         return suspendCancellableCoroutine { cont ->
             val continuation = UnitContinuation(cont)
             val ref = StableRef.create(continuation)
@@ -67,6 +70,7 @@ public class URing(
         mode: Int = 0,
         resolve: Int = 0,
     ): Int {
+        ensureActive()
         return suspendCancellableCoroutine { cont ->
             val pathPointer = filePath.utf8.getPointer(heap)
             val how = heap.alloc<open_how> {
@@ -96,6 +100,7 @@ public class URing(
         entry: SubmissionQueueEntry,
         fileDescriptor: Int
     ) {
+        ensureActive()
         return suspendCancellableCoroutine { cont ->
             val continuation = UnitContinuation(cont)
             val ref = StableRef.create(continuation)
@@ -113,6 +118,7 @@ public class URing(
         offset: ULong = 0u,
         flags: Int = 0,
     ): Int {
+        ensureActive()
         return suspendCancellableCoroutine { cont ->
             val pinnedBuffers = buffers.map { it.pin() }
             val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
@@ -145,6 +151,7 @@ public class URing(
         offset: ULong = 0u,
         flags: Int = 0,
     ): Int {
+        ensureActive()
         return suspendCancellableCoroutine { cont ->
             val pinnedBuffers = buffers.map { it.pin() }
             val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
@@ -204,9 +211,9 @@ public class URing(
         }
     }
 
-    override fun close() {
-        job.cancel()
-    }
+    override fun close(): Unit = job.cancel()
+
+    private fun ensureActive() = check(job.isActive) { "URing was cancelled or closed." }
 }
 
 private val StableRef<*>.userData: ULong get() = asCPointer().rawValue.toLong().toULong()
