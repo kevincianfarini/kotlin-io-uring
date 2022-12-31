@@ -1,5 +1,6 @@
 package com.kevincianfarini.iouring
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import liburing.*
 import kotlin.test.*
@@ -33,6 +34,17 @@ class URingTest {
             val nop = ring.noOp(entry)
             assertEquals(expected = 1, actual = ring.submit())
             nop.await()
+        }
+    }
+
+    @Test fun `URing no-op cancels`() {
+        runBlocking {
+            URing(QueueDepth(2u), 0u, this).use { ring ->
+                val entry = checkNotNull(ring.getSubmissionQueueEntry())
+                val deferred = ring.noOp(entry).also { it.cancel() }
+                ring.submit()
+                assertFailsWith<CancellationException> { deferred.await() }
+            }
         }
     }
 

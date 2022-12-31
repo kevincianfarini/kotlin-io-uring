@@ -60,7 +60,7 @@ public class URing(
                 val ref = StableRef.create(continuation)
                 io_uring_prep_nop(entry.sqe.ptr)
                 io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
+                continuation.registerIOUringCancellation(ring, ref)
             }
         }
     }
@@ -95,7 +95,7 @@ public class URing(
                     how = how.ptr,
                 )
                 io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
+                continuation.registerIOUringCancellation(ring, ref)
             }
         }
     }
@@ -108,7 +108,7 @@ public class URing(
                 val ref = StableRef.create(continuation)
                 io_uring_prep_close(sqe = entry.sqe.ptr, fd = fileDescriptor)
                 io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
+                continuation.registerIOUringCancellation(ring, ref)
             }
         }
     }
@@ -142,7 +142,7 @@ public class URing(
                 }
                 val ref = StableRef.create(continuation)
                 io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
+                continuation.registerIOUringCancellation(ring, ref)
             }
         }
     }
@@ -176,7 +176,7 @@ public class URing(
                 }
                 val ref = StableRef.create(continuation)
                 io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
+                continuation.registerIOUringCancellation(ring, ref)
             }
         }
     }
@@ -197,7 +197,7 @@ public class URing(
     }
 
     private fun resumeContinuation(cqe: CPointerVar<io_uring_cqe>, timeout: __kernel_timespec) {
-        when (io_uring_wait_cqe_timeout(ring.ptr, cqe.ptr, timeout.ptr)) {
+        when (val cqeRes = io_uring_wait_cqe_timeout(ring.ptr, cqe.ptr, timeout.ptr)) {
             0 -> {
                 io_uring_cqe_seen(ring.ptr, cqe.value)
                 val userDataPointer = checkNotNull(io_uring_cqe_get_data(cqe.value)) {
@@ -213,7 +213,8 @@ public class URing(
                     cont.resumeWithIntRes(res)
                 }
             }
-            else -> Unit
+            -ETIME -> Unit // Allow outer loop to spin and check for cancellation.
+            else -> error("Failed to get CQE. Error $cqeRes")
         }
     }
 
@@ -232,11 +233,14 @@ public suspend inline fun URing.use(block: (URing) -> Unit) {
 
 private inline fun <T : Any> CancellableContinuation<T>.registerIOUringCancellation(
     ring: io_uring,
-    sqe: io_uring_sqe,
     ref: StableRef<*>,
 ) = invokeOnCancellation {
-    io_uring_prep_cancel(sqe.ptr, ref.asCPointer(), flags = 0)
-    io_uring_submit(ring.ptr)
+    memScoped {
+        val cancellationRegistration = alloc<io_uring_sync_cancel_reg> {
+            this.addr = ref.asCPointer().toLong().convert()
+        }
+        io_uring_register_sync_cancel(ring.ptr, cancellationRegistration.ptr)
+    }
 }
 
 private fun <T : CVariable> CValues<T>.getPointer(
