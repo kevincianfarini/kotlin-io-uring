@@ -45,136 +45,139 @@ public class URing(
      * This performs an underlying system call and is therefore an expensive
      * operation.
      */
-    public fun submit() {
+    public fun submit(): Int {
         ensureActive()
         val ret = io_uring_submit(ring.ptr)
         check(ret > -1) { "Submission error $ret." }
+        return ret
     }
 
-    public suspend fun noOp(entry: SubmissionQueueEntry) {
+    public fun noOp(entry: SubmissionQueueEntry): Deferred<Unit> {
         ensureActive()
-        return suspendCancellableCoroutine { cont ->
-            val continuation = UnitContinuation(cont)
-            val ref = StableRef.create(continuation)
-            io_uring_prep_nop(entry.sqe.ptr)
-            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
-            io_uring_submit(ring.ptr)
+        return scope.async(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                val continuation = UnitContinuation(cont)
+                val ref = StableRef.create(continuation)
+                io_uring_prep_nop(entry.sqe.ptr)
+                io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
+                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
+            }
         }
     }
 
-    public suspend fun open(
+    public fun open(
         entry: SubmissionQueueEntry,
         filePath: String,
         directoryFileDescriptor: Int = AT_FDCWD,
         flags: Int = 0,
         mode: Int = 0,
         resolve: Int = 0,
-    ): Int {
+    ): Deferred<Int> {
         ensureActive()
-        return suspendCancellableCoroutine { cont ->
-            val pathPointer = filePath.utf8.getPointer(heap)
-            val how = heap.alloc<open_how> {
-                this.flags = flags.convert()
-                this.mode = mode.convert()
-                this.resolve = resolve.convert()
-            }
-            val continuation = IntContinuation(cont) {
-                heap.free(how)
-                heap.free(pathPointer)
-            }
+        return scope.async(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                val pathPointer = filePath.utf8.getPointer(heap)
+                val how = heap.alloc<open_how> {
+                    this.flags = flags.convert()
+                    this.mode = mode.convert()
+                    this.resolve = resolve.convert()
+                }
+                val continuation = IntContinuation(cont) {
+                    heap.free(how)
+                    heap.free(pathPointer)
+                }
 
-            val ref = StableRef.create(continuation)
-            io_uring_prep_openat2(
-                sqe = entry.sqe.ptr,
-                dfd = directoryFileDescriptor,
-                path = pathPointer,
-                how = how.ptr,
-            )
-            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
-            io_uring_submit(ring.ptr)
+                val ref = StableRef.create(continuation)
+                io_uring_prep_openat2(
+                    sqe = entry.sqe.ptr,
+                    dfd = directoryFileDescriptor,
+                    path = pathPointer,
+                    how = how.ptr,
+                )
+                io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
+                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
+            }
         }
     }
 
-    public suspend fun close(
-        entry: SubmissionQueueEntry,
-        fileDescriptor: Int
-    ) {
+    public fun close(entry: SubmissionQueueEntry, fileDescriptor: Int): Deferred<Unit> {
         ensureActive()
-        return suspendCancellableCoroutine { cont ->
-            val continuation = UnitContinuation(cont)
-            val ref = StableRef.create(continuation)
-            io_uring_prep_close(sqe = entry.sqe.ptr, fd = fileDescriptor)
-            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
-            io_uring_submit(ring.ptr)
+        return scope.async(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                val continuation = UnitContinuation(cont)
+                val ref = StableRef.create(continuation)
+                io_uring_prep_close(sqe = entry.sqe.ptr, fd = fileDescriptor)
+                io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
+                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
+            }
         }
     }
 
-    public suspend fun vectorRead(
-        entry: SubmissionQueueEntry,
-        fileDescriptor: Int,
-        vararg buffers: ByteArray,
-        offset: ULong = 0u,
-        flags: Int = 0,
-    ): Int {
-        ensureActive()
-        return suspendCancellableCoroutine { cont ->
-            val pinnedBuffers = buffers.map { it.pin() }
-            val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
-                iov_len = pinnedBuffers[index].get().size.convert()
-                iov_base = pinnedBuffers[index].addressOf(0)
-            }
-            io_uring_prep_readv2(
-                sqe = entry.sqe.ptr,
-                fd = fileDescriptor,
-                iovecs = iovecs,
-                nr_vecs = buffers.size.convert(),
-                offset = offset,
-                flags = flags,
-            )
-            val continuation = IntContinuation(cont) {
-                pinnedBuffers.forEach { it.unpin() }
-                heap.free(iovecs)
-            }
-            val ref = StableRef.create(continuation)
-            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
-            io_uring_submit(ring.ptr)
-        }
-    }
-
-    public suspend fun vectorWrite(
+    public fun vectorRead(
         entry: SubmissionQueueEntry,
         fileDescriptor: Int,
         vararg buffers: ByteArray,
         offset: ULong = 0u,
         flags: Int = 0,
-    ): Int {
+    ): Deferred<Int> {
         ensureActive()
-        return suspendCancellableCoroutine { cont ->
-            val pinnedBuffers = buffers.map { it.pin() }
-            val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
-                iov_len = pinnedBuffers[index].get().size.convert()
-                iov_base = pinnedBuffers[index].addressOf(0)
+        return scope.async(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                val pinnedBuffers = buffers.map { it.pin() }
+                val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
+                    iov_len = pinnedBuffers[index].get().size.convert()
+                    iov_base = pinnedBuffers[index].addressOf(0)
+                }
+                io_uring_prep_readv2(
+                    sqe = entry.sqe.ptr,
+                    fd = fileDescriptor,
+                    iovecs = iovecs,
+                    nr_vecs = buffers.size.convert(),
+                    offset = offset,
+                    flags = flags,
+                )
+                val continuation = IntContinuation(cont) {
+                    pinnedBuffers.forEach { it.unpin() }
+                    heap.free(iovecs)
+                }
+                val ref = StableRef.create(continuation)
+                io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
+                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             }
-            io_uring_prep_writev2(
-                sqe = entry.sqe.ptr,
-                fd = fileDescriptor,
-                iovecs = iovecs,
-                nr_vecs = buffers.size.convert(),
-                offset = offset,
-                flags = flags,
-            )
-            val continuation = IntContinuation(cont) {
-                pinnedBuffers.forEach { it.unpin() }
-                heap.free(iovecs)
+        }
+    }
+
+    public fun vectorWrite(
+        entry: SubmissionQueueEntry,
+        fileDescriptor: Int,
+        vararg buffers: ByteArray,
+        offset: ULong = 0u,
+        flags: Int = 0,
+    ): Deferred<Int> {
+        ensureActive()
+        return scope.async(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                val pinnedBuffers = buffers.map { it.pin() }
+                val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
+                    iov_len = pinnedBuffers[index].get().size.convert()
+                    iov_base = pinnedBuffers[index].addressOf(0)
+                }
+                io_uring_prep_writev2(
+                    sqe = entry.sqe.ptr,
+                    fd = fileDescriptor,
+                    iovecs = iovecs,
+                    nr_vecs = buffers.size.convert(),
+                    offset = offset,
+                    flags = flags,
+                )
+                val continuation = IntContinuation(cont) {
+                    pinnedBuffers.forEach { it.unpin() }
+                    heap.free(iovecs)
+                }
+                val ref = StableRef.create(continuation)
+                io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
+                continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             }
-            val ref = StableRef.create(continuation)
-            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, entry.sqe, ref)
-            io_uring_submit(ring.ptr)
         }
     }
 

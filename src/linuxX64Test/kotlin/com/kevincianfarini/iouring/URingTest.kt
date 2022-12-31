@@ -30,7 +30,9 @@ class URingTest {
     @Test fun `URing no-op returns`() = runBlocking {
         URing(QueueDepth(2u), 0u, this).use { ring ->
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
-            ring.noOp(entry)
+            val nop = ring.noOp(entry)
+            assertEquals(expected = 1, actual = ring.submit())
+            nop.await()
         }
     }
 
@@ -39,7 +41,7 @@ class URingTest {
             val ring = URing(QueueDepth(2u), 0u, this)
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             ring.stop()
-            assertFailsWith<IllegalStateException> { ring.noOp(entry) }
+            assertFailsWith<IllegalStateException> { ring.noOp(entry).await() }
         }
     }
 
@@ -50,7 +52,8 @@ class URingTest {
                 entry = entry,
                 filePath = "./src/linuxX64Test/resources/hello.txt"
             )
-            assertTrue(fd > 0)
+            assertEquals(expected = 1, actual = ring.submit())
+            assertTrue(fd.await() > 0)
         }
     }
 
@@ -60,7 +63,7 @@ class URingTest {
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             ring.stop()
             assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
-                ring.open(entry, filePath = "./src/linuxX64Test/resources/hello.txt")
+                ring.open(entry, filePath = "./src/linuxX64Test/resources/hello.txt").await()
             }
         }
     }
@@ -72,8 +75,11 @@ class URingTest {
                 entry = openEntry,
                 filePath = "./src/linuxX64Test/resources/hello.txt",
             )
+            assertEquals(expected = 1, actual = ring.submit())
             val closeEntry = checkNotNull(ring.getSubmissionQueueEntry())
-            ring.close(closeEntry, fd)
+            val deferred = ring.close(closeEntry, fd.await())
+            assertEquals(expected = 1, actual = ring.submit())
+            deferred.await()
         }
     }
 
@@ -83,7 +89,7 @@ class URingTest {
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             ring.stop()
             assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
-                ring.close(entry, fileDescriptor = -1)
+                ring.close(entry, fileDescriptor = -1).await()
             }
         }
     }
@@ -91,17 +97,28 @@ class URingTest {
     @Test fun `URing fails to close bad file descriptor`() = runBlocking {
         URing(QueueDepth(2u), 0u, this).use { ring ->
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
-            assertFailsWith<IllegalStateException> { ring.close(entry, -1) }
+            assertFailsWith<IllegalStateException> {
+                ring.close(entry, -1).let { deferred ->
+                    assertEquals(expected = 1, actual = ring.submit())
+                    deferred.await()
+                }
+            }
         }
     }
 
     @Test fun `URing vectorRead reads into buffer`() = runBlocking {
         URing(QueueDepth(2u), 0u, this).use { ring ->
             val openEntry = checkNotNull(ring.getSubmissionQueueEntry())
-            val fd = ring.open(openEntry, filePath = "./src/linuxX64Test/resources/hello.txt")
+            val fd = ring.open(openEntry, filePath = "./src/linuxX64Test/resources/hello.txt").let {
+                assertEquals(expected = 1, actual = ring.submit())
+                it.await()
+            }
             val buffer = ByteArray(100)
             val readEntry = checkNotNull(ring.getSubmissionQueueEntry())
-            val bytesRead = ring.vectorRead(readEntry, fd, buffer)
+            val bytesRead = ring.vectorRead(readEntry, fd, buffer).let {
+                assertEquals(expected = 1, actual = ring.submit())
+                it.await()
+            }
             assertTrue(bytesRead > 0)
             assertEquals(
                 expected = "hello world!",
@@ -115,8 +132,8 @@ class URingTest {
             val ring = URing(QueueDepth(2u), 0u, this)
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             ring.stop()
-            assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
-                ring.vectorRead(entry, fileDescriptor = -1)
+            assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed.") {
+                ring.vectorRead(entry, fileDescriptor = -1).await()
             }
         }
     }
@@ -129,15 +146,24 @@ class URingTest {
                 filePath = "./src/linuxX64Test/resources",
                 flags = O_TMPFILE or O_RDWR,
                 mode = S_IRWXO,
-            )
+            ).let {
+                assertEquals(expected = 1, actual = ring.submit())
+                it.await()
+            }
             val buffer = "goodbye world!".encodeToByteArray()
             val writeEntry = checkNotNull(ring.getSubmissionQueueEntry())
-            val bytesWritten = ring.vectorWrite(writeEntry, fd, buffer)
+            val bytesWritten = ring.vectorWrite(writeEntry, fd, buffer).let {
+                assertEquals(expected = 1, actual = ring.submit())
+                it.await()
+            }
             assertEquals(expected = buffer.size, actual = bytesWritten)
 
             val readEntry = checkNotNull(ring.getSubmissionQueueEntry())
             val readBuffer = ByteArray(100)
-            val bytesRead = ring.vectorRead(readEntry, fd, readBuffer)
+            val bytesRead = ring.vectorRead(readEntry, fd, readBuffer).let {
+                assertEquals(expected = 1, actual = ring.submit())
+                it.await()
+            }
             assertEquals(
                 expected = "goodbye world!",
                 actual = readBuffer.decodeToString(endIndex = bytesRead),
@@ -151,7 +177,7 @@ class URingTest {
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             ring.stop()
             assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
-                ring.vectorWrite(entry, fileDescriptor = -1)
+                ring.vectorWrite(entry, fileDescriptor = -1).await()
             }
         }
     }
