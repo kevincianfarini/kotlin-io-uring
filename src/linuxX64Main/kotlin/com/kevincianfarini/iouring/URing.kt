@@ -57,7 +57,7 @@ public class URing(
             val continuation = UnitContinuation(cont)
             val ref = StableRef.create(continuation)
             io_uring_prep_nop(entry.sqe.ptr)
-            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
             continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
@@ -91,7 +91,7 @@ public class URing(
                 path = pathPointer,
                 how = how.ptr,
             )
-            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
             continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
@@ -106,7 +106,7 @@ public class URing(
             val continuation = UnitContinuation(cont)
             val ref = StableRef.create(continuation)
             io_uring_prep_close(sqe = entry.sqe.ptr, fd = fileDescriptor)
-            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
             continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
@@ -139,7 +139,7 @@ public class URing(
                 heap.free(iovecs)
             }
             val ref = StableRef.create(continuation)
-            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
             continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
@@ -172,7 +172,7 @@ public class URing(
                 heap.free(iovecs)
             }
             val ref = StableRef.create(continuation)
-            io_uring_sqe_set_data64(entry.sqe.ptr, ref.userData)
+            io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
             continuation.registerIOUringCancellation(ring, entry.sqe, ref)
             io_uring_submit(ring.ptr)
         }
@@ -197,14 +197,14 @@ public class URing(
         when (io_uring_wait_cqe_timeout(ring.ptr, cqe.ptr, timeout.ptr)) {
             0 -> {
                 io_uring_cqe_seen(ring.ptr, cqe.value)
-                val hydratedCqe = cqe.pointed!!
-                val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
+                val userDataPointer = checkNotNull(io_uring_cqe_get_data(cqe.value)) {
                     """
                         | No completion found for completed event. Did you 
                         | call `getSubmissionEvent` and `submit` without
                         | preparing an IO operation?
                     """.trimMargin()
                 }
+                val hydratedCqe = cqe.pointed!!
                 val res = hydratedCqe.res
                 userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
                     cont.resumeWithIntRes(res)
@@ -227,17 +227,12 @@ public suspend inline fun URing.use(block: (URing) -> Unit) {
     }
 }
 
-private val StableRef<*>.userData: ULong get() = asCPointer().rawValue.toLong().toULong()
-private fun ULong.toVoidPointer(): COpaquePointer? {
-    return toLong().toCPointer()
-}
-
 private inline fun <T : Any> CancellableContinuation<T>.registerIOUringCancellation(
     ring: io_uring,
     sqe: io_uring_sqe,
     ref: StableRef<*>,
 ) = invokeOnCancellation {
-    io_uring_prep_cancel64(sqe.ptr, ref.userData, flags = 0)
+    io_uring_prep_cancel(sqe.ptr, ref.asCPointer(), flags = 0)
     io_uring_submit(ring.ptr)
 }
 
