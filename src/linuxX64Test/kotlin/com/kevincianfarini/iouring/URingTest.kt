@@ -22,7 +22,7 @@ class URingTest {
 
     @Test fun `URing getSubmissionQueueEntry fails after close`() {
         runBlocking {
-            val ring = URing(QueueDepth(2u), 0u, this).also { it.close() }
+            val ring = URing(QueueDepth(2u), 0u, this).also { it.stop() }
             assertFailsWith<IllegalStateException> { ring.getSubmissionQueueEntry() }
         }
     }
@@ -38,7 +38,7 @@ class URingTest {
         runBlocking {
             val ring = URing(QueueDepth(2u), 0u, this)
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
-            ring.close()
+            ring.stop()
             assertFailsWith<IllegalStateException> { ring.noOp(entry) }
         }
     }
@@ -58,7 +58,7 @@ class URingTest {
         runBlocking {
             val ring = URing(QueueDepth(2u), 0u, this)
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
-            ring.close()
+            ring.stop()
             assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
                 ring.open(entry, filePath = "./src/linuxX64Test/resources/hello.txt")
             }
@@ -81,7 +81,7 @@ class URingTest {
         runBlocking {
             val ring = URing(QueueDepth(2u), 0u, this)
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
-            ring.close()
+            ring.stop()
             assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
                 ring.close(entry, fileDescriptor = -1)
             }
@@ -114,7 +114,7 @@ class URingTest {
         runBlocking {
             val ring = URing(QueueDepth(2u), 0u, this)
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
-            ring.close()
+            ring.stop()
             assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
                 ring.vectorRead(entry, fileDescriptor = -1)
             }
@@ -149,7 +149,7 @@ class URingTest {
         runBlocking {
             val ring = URing(QueueDepth(2u), 0u, this)
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
-            ring.close()
+            ring.stop()
             assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
                 ring.vectorWrite(entry, fileDescriptor = -1)
             }

@@ -9,21 +9,22 @@ import kotlin.coroutines.resumeWithException
 public class URing(
     queueDepth: QueueDepth,
     ringFlags: UInt,
-    scope: CoroutineScope,
+    parentScope: CoroutineScope,
     private val heap: NativeFreeablePlacement = nativeHeap,
-) : Closeable {
+) {
 
     private val ring: io_uring = heap.alloc()
-    private val job: Job
+    private val job: Job = Job().apply {
+        invokeOnCompletion {
+            io_uring_queue_exit(ring.ptr)
+            heap.free(ring.ptr)
+        }
+    }
+    private val scope = CoroutineScope(parentScope.coroutineContext + job)
 
     init {
         io_uring_queue_init(queueDepth.depth, ring.ptr, ringFlags)
-        job = scope.launch { poll() }.apply {
-            invokeOnCompletion {
-                io_uring_queue_exit(ring.ptr)
-                heap.free(ring.ptr)
-            }
-        }
+        scope.launch { poll() }
     }
 
     /**
@@ -186,9 +187,7 @@ public class URing(
 
                 // TODO(kcianfarini) We wouldn't have to use a random timeout here and spin every
                 //                   100ms if Kotlin Native had a runInterruptale equivalent.
-                val timeout = alloc<__kernel_timespec> {
-                    tv_nsec = 100_000_000L
-                }
+                val timeout = alloc<__kernel_timespec> { tv_nsec = 100_000_000L }
                 while (isActive) { resumeContinuation(cqe, timeout) }
             }
         }
@@ -200,7 +199,11 @@ public class URing(
                 io_uring_cqe_seen(ring.ptr, cqe.value)
                 val hydratedCqe = cqe.pointed!!
                 val userDataPointer = checkNotNull(hydratedCqe.user_data.toVoidPointer()) {
-                    "No user data found in completion queue entry."
+                    """
+                        | No completion found for completed event. Did you 
+                        | call `getSubmissionEvent` and `submit` without
+                        | preparing an IO operation?
+                    """.trimMargin()
                 }
                 val res = hydratedCqe.res
                 userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
@@ -211,9 +214,17 @@ public class URing(
         }
     }
 
-    override fun close(): Unit = job.cancel()
+    public suspend fun stop(): Unit = job.cancelAndJoin()
 
     private fun ensureActive() = check(job.isActive) { "URing was cancelled or closed." }
+}
+
+public suspend inline fun URing.use(block: (URing) -> Unit) {
+    try {
+        block(this)
+    } finally {
+        stop()
+    }
 }
 
 private val StableRef<*>.userData: ULong get() = asCPointer().rawValue.toLong().toULong()

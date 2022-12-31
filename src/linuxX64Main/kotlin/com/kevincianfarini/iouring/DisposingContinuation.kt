@@ -6,20 +6,20 @@ import platform.posix.close
 
 internal sealed class DisposingContinuation<T>(
     private val delegate: CancellableContinuation<T>,
-    private val closeable: Closeable? = null,
+    private val disposable: Disposable? = null,
 ) : CancellableContinuation<T> by delegate {
 
     private var registeredCancellationHandler: CompletionHandler? = null
 
     init {
         delegate.invokeOnCancellation { t ->
-            closeable?.close()
+            disposable?.dispose()
             registeredCancellationHandler?.invoke(t)
         }
     }
 
     override fun resumeWith(result: Result<T>) {
-        closeable?.close()
+        disposable?.dispose()
         delegate.resumeWith(result)
     }
 
@@ -31,10 +31,10 @@ internal sealed class DisposingContinuation<T>(
 
 internal class IntContinuation(
     delegate: CancellableContinuation<Int>,
-    closeable: Closeable? = null,
-): DisposingContinuation<Int>(delegate = delegate, closeable = closeable)
+    disposable: Disposable? = null,
+): DisposingContinuation<Int>(delegate = delegate, disposable = disposable)
 
 internal class UnitContinuation(
     delegate: CancellableContinuation<Unit>,
-    closeable: Closeable? = null,
-) : DisposingContinuation<Unit>(delegate = delegate, closeable = closeable)
+    disposable: Disposable? = null,
+) : DisposingContinuation<Unit>(delegate = delegate, disposable = disposable)
