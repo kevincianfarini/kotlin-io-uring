@@ -2,7 +2,8 @@ package com.kevincianfarini.iouring
 
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletionHandler
-import platform.posix.close
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 internal sealed class DisposingContinuation<T>(
     private val delegate: CancellableContinuation<T>,
@@ -27,14 +28,32 @@ internal sealed class DisposingContinuation<T>(
         check(registeredCancellationHandler == null) { "Already registered a cancellation handler." }
         registeredCancellationHandler = handler
     }
+
+    abstract fun resumeWithIntResult(result: Int)
 }
 
 internal class IntContinuation(
     delegate: CancellableContinuation<Int>,
     disposable: Disposable? = null,
-): DisposingContinuation<Int>(delegate = delegate, disposable = disposable)
+): DisposingContinuation<Int>(delegate = delegate, disposable = disposable) {
+
+    override fun resumeWithIntResult(result: Int) = when {
+        result < 0 -> resumeWithException(
+            IllegalStateException("Error code $result.")
+        )
+        else -> resume(result)
+    }
+}
 
 internal class UnitContinuation(
     delegate: CancellableContinuation<Unit>,
     disposable: Disposable? = null,
-) : DisposingContinuation<Unit>(delegate = delegate, disposable = disposable)
+) : DisposingContinuation<Unit>(delegate = delegate, disposable = disposable) {
+
+    override fun resumeWithIntResult(result: Int) = when (result) {
+        0 -> resume(Unit)
+        else -> resumeWithException(
+            IllegalStateException("io_uring error number $result.")
+        )
+    }
+}

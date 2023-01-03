@@ -210,7 +210,7 @@ public class URing(
                 val hydratedCqe = cqe.pointed!!
                 val res = hydratedCqe.res
                 userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
-                    cont.resumeWithIntRes(res)
+                    cont.resumeWithIntResult(res)
                 }
             }
             -ETIME -> Unit // Allow outer loop to spin and check for cancellation.
@@ -251,19 +251,4 @@ private inline fun <T : Any> StableRef<T>.use(block: (T) -> Unit) = try {
     block(get())
 } finally {
     dispose()
-}
-
-private inline fun DisposingContinuation<*>.resumeWithIntRes(res: Int) = when (this) {
-    is IntContinuation -> when {
-        res < 0 -> resumeWithException(
-            IllegalStateException("Error code $res.")
-        )
-        else -> resume(res)
-    }
-    is UnitContinuation -> when (res) {
-        0 -> resume(Unit)
-        else -> resumeWithException(
-            IllegalStateException("io_uring error number $res.")
-        )
-    }
 }
