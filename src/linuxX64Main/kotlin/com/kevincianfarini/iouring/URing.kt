@@ -113,6 +113,37 @@ public class URing(
         }
     }
 
+    public fun fileStatus(
+        entry: SubmissionQueueEntry,
+        filePath: String,
+        request: FileStatusRequest,
+        directoryFileDescriptor: Int = AT_FDCWD,
+    ): Deferred<FileStatusResult> {
+        ensureActive()
+        return scope.async(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                val pathPointer = filePath.utf8.getPointer(heap)
+                val statxbuf = heap.alloc<statx>()
+                io_uring_prep_statx(
+                    sqe = entry.sqe.ptr,
+                    dfd = directoryFileDescriptor,
+                    path = pathPointer,
+                    flags = 0,
+                    mask = request.bitMask,
+                    statxbuf = statxbuf.ptr,
+                )
+
+                val continuation = ValueProducingContinuation(cont, statxbuf::toFileStatusResult) {
+                    heap.free(pathPointer)
+                    heap.free(statxbuf)
+                }
+                val ref = StableRef.create(continuation)
+                io_uring_sqe_set_data(entry.sqe.ptr, ref.asCPointer())
+                continuation.registerIOUringCancellation(ring, ref)
+            }
+        }
+    }
+
     public fun vectorRead(
         entry: SubmissionQueueEntry,
         fileDescriptor: Int,
@@ -252,3 +283,7 @@ private inline fun <T : Any> StableRef<T>.use(block: (T) -> Unit) = try {
 } finally {
     dispose()
 }
+
+private inline fun statx.toFileStatusResult() = FileStatusResult(
+    size = stx_size,
+)

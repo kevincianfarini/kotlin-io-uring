@@ -20,8 +20,8 @@ internal sealed class DisposingContinuation<T>(
     }
 
     override fun resumeWith(result: Result<T>) {
-        disposable?.dispose()
         delegate.resumeWith(result)
+        disposable?.dispose()
     }
 
     override fun invokeOnCancellation(handler: CompletionHandler) {
@@ -39,7 +39,7 @@ internal class IntContinuation(
 
     override fun resumeWithIntResult(result: Int) = when {
         result < 0 -> resumeWithException(
-            IllegalStateException("Error code $result.")
+            IllegalStateException("io_uring error number $result.")
         )
         else -> resume(result)
     }
@@ -52,6 +52,20 @@ internal class UnitContinuation(
 
     override fun resumeWithIntResult(result: Int) = when (result) {
         0 -> resume(Unit)
+        else -> resumeWithException(
+            IllegalStateException("io_uring error number $result.")
+        )
+    }
+}
+
+internal class ValueProducingContinuation<T>(
+    delegate: CancellableContinuation<T>,
+    private val produceValue: () -> T,
+    disposable: Disposable? = null,
+) : DisposingContinuation<T>(delegate = delegate, disposable = disposable) {
+
+    override fun resumeWithIntResult(result: Int) = when (result) {
+        0 -> resume(produceValue())
         else -> resumeWithException(
             IllegalStateException("io_uring error number $result.")
         )

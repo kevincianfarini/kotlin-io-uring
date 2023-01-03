@@ -193,4 +193,20 @@ class URingTest {
             }
         }
     }
+
+    @Test fun `URing fileStatus returns file size`() = runBlocking {
+        URing(QueueDepth(2u), 0u, this).use { ring ->
+            val entry = checkNotNull(ring.getSubmissionQueueEntry())
+            val status = ring.fileStatus(
+                entry = entry,
+                filePath = "./src/linuxX64Test/resources/hello.txt",
+                request = FileStatusRequest { requestFileSize() },
+            )
+            ring.submit()
+            assertEquals(
+                expected = 12u,
+                actual = status.await().size,
+            )
+        }
+    }
 }
