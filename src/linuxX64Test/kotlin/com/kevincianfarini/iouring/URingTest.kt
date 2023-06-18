@@ -188,7 +188,7 @@ class URingTest {
             val ring = URing(QueueDepth(2u), 0u, this)
             val entry = checkNotNull(ring.getSubmissionQueueEntry())
             ring.stop()
-            assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
+            assertFailsWith<IllegalStateException>(message = "Uring was cancelled or closed."){
                 ring.vectorWrite(entry, fileDescriptor = -1).await()
             }
         }
@@ -200,7 +200,7 @@ class URingTest {
             val status = ring.fileStatus(
                 entry = entry,
                 filePath = "./src/linuxX64Test/resources/hello.txt",
-                request = FileStatusRequest { requestFileSize() },
+                request = FileStatusRequest.Size,
             )
             ring.submit()
             assertEquals(
