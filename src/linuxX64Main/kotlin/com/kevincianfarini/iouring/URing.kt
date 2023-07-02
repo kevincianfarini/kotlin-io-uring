@@ -3,8 +3,6 @@ package com.kevincianfarini.iouring
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import liburing.*
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 public class URing(
     queueDepth: QueueDepth,
@@ -212,23 +210,17 @@ public class URing(
         }
     }
 
-    private suspend fun poll() {
-        @OptIn(ExperimentalCoroutinesApi::class)
-        val workerThread = newSingleThreadContext("io_uring thread")
-        withContext(context = CoroutineName("io_uring poll job") + workerThread) {
-            memScoped {
-                val cqe = allocPointerTo<io_uring_cqe>()
-
-                // TODO(kcianfarini) We wouldn't have to use a random timeout here and spin every
-                //                   100ms if Kotlin Native had a runInterruptale equivalent.
-                val timeout = alloc<__kernel_timespec> { tv_nsec = 100_000_000L }
-                while (isActive) { resumeContinuation(cqe, timeout) }
+    private suspend fun poll() = withContext(context = CoroutineName("io_uring poll job")) {
+        memScoped {
+            val cqe = allocPointerTo<io_uring_cqe>()
+            while (isActive) {
+                resumeContinuation(cqe)
             }
         }
     }
 
-    private fun resumeContinuation(cqe: CPointerVar<io_uring_cqe>, timeout: __kernel_timespec) {
-        when (val cqeRes = io_uring_wait_cqe_timeout(ring.ptr, cqe.ptr, timeout.ptr)) {
+    private suspend fun resumeContinuation(cqe: CPointerVar<io_uring_cqe>) {
+        when (val cqeRes = io_uring_peek_cqe(ring.ptr, cqe.ptr)) {
             0 -> {
                 io_uring_cqe_seen(ring.ptr, cqe.value)
                 val userDataPointer = checkNotNull(io_uring_cqe_get_data(cqe.value)) {
@@ -244,7 +236,10 @@ public class URing(
                     cont.resumeWithIntResult(res)
                 }
             }
-            -ETIME -> Unit // Allow outer loop to spin and check for cancellation.
+            // There were no synchronously available completion queue events ready to be resumed. This
+            // coroutine will [yield] to other coroutines awaiting execution under the assumption that
+            // eventually, a completion queue event will become available.
+            -EAGAIN -> yield()
             else -> error("Failed to get CQE. Error $cqeRes")
         }
     }
