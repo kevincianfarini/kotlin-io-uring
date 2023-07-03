@@ -1,4 +1,4 @@
-package com.kevincianfarini.iouring
+package com.kevincianfarini.iouring.internal
 
 internal fun interface Disposable {
     fun dispose()
