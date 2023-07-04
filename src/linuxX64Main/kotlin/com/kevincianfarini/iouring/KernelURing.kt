@@ -6,6 +6,8 @@ import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.getOrElse
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import liburing.*
 
 @ExperimentalStdlibApi
@@ -32,6 +34,7 @@ public class KernelURing(
         }
     }
     private val scope = CoroutineScope(parentScope.coroutineContext + job)
+    private val pollingStarted = MutableStateFlow(false)
 
     init {
         io_uring_queue_init(queueDepth.depth, ring.ptr, ringFlags)
@@ -180,7 +183,6 @@ public class KernelURing(
 
     override suspend fun submit() {
         ensureActive()
-        println("Sending submission event.")
         submissionEvents.send(Unit)
     }
 
@@ -216,44 +218,67 @@ public class KernelURing(
     }
 
     private suspend fun pollSubmissions() = withContext(CoroutineName("io_uring submission job")) {
+        // Wait for the polling thread to initialize and flip this flag before we start consuming submission events.
+        pollingStarted.first { it }
         for (event in submissionEvents) {
-            println("Submitting ring!")
             val result = io_uring_submit(ring.ptr)
             check(result >= 0) { "io_uring_submit failed with error code $result." }
         }
     }
 
-    private suspend fun pollCompletions() = withContext(context = CoroutineName("io_uring completion queue job")) {
-        memScoped {
-            val cqe = allocPointerTo<io_uring_cqe>()
-            while (isActive) { resumeContinuation(cqe) }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun pollCompletions() {
+        val workerThread = newSingleThreadContext("io_uring worker thread")
+        val coroutineName = CoroutineName("io_uring completion queue job")
+        runInterruptible(signal = SIGALRM, coroutineContext = workerThread + coroutineName) {
+            pollCompletionsBlocking()
         }
     }
 
-    private suspend fun resumeContinuation(cqe: CPointerVar<io_uring_cqe>) {
-        when (val cqeRes = io_uring_peek_cqe(ring.ptr, cqe.ptr)) {
+    private fun pollCompletionsBlocking() = memScoped {
+        val cqe = allocPointerTo<io_uring_cqe>()
+        var interrupted = false
+        while (!interrupted) { interrupted = awaitCompletionEvent(cqe) }
+    }
+
+    /**
+     * The return value is a boolean signifying whether this blocking function was interrupted.
+     */
+    private fun awaitCompletionEvent(cqe: CPointerVar<io_uring_cqe>): Boolean {
+        pollingStarted.value = true
+        return when (val cqeRes = io_uring_wait_cqe(ring.ptr, cqe.ptr)) {
             0 -> {
-                io_uring_cqe_seen(ring.ptr, cqe.value)
-                val userDataPointer = checkNotNull(io_uring_cqe_get_data(cqe.value)) {
-                    """
-                        | No completion found for completed event. Did you 
-                        | call `getSubmissionEvent` and `submit` without
-                        | preparing an IO operation?
-                    """.trimMargin()
-                }
-                val hydratedCqe = cqe.pointed!!
-                val res = hydratedCqe.res
-                userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
-                    cont.resumeWithIntResult(res)
-                }
-                submissionQueueEvents.trySend(Unit).getOrThrow()
+                // We have at least one populated CQE. Resume it and then loop other potentially remaining ones.
+                resumeContinuation(cqe)
+                loopAvailableCqes(cqe)
+                false
             }
-            // There were no synchronously available completion queue events ready to be resumed. This
-            // coroutine will [yield] to other coroutines awaiting execution under the assumption that
-            // eventually, a completion queue event will become available.
-            -EAGAIN -> yield()
+            // The blocking io_uring_wait_cqe call has been interrupted. This is because cancellation has occured while
+            // the thread was blocked on this call, and we've manually signaled to the worker thread that this should
+            // stop blocking. Return `true` to signify we have been interrupted.
+            -EINTR -> true
             else -> error("Failed to get CQE. Error $cqeRes")
         }
+    }
+
+    private fun loopAvailableCqes(cqe: CPointerVar<io_uring_cqe>) {
+        while (io_uring_peek_cqe(ring.ptr, cqe.ptr) == 0) {
+            resumeContinuation(cqe)
+        }
+    }
+
+    private fun resumeContinuation(cqe: CPointerVar<io_uring_cqe>) {
+        io_uring_cqe_seen(ring.ptr, cqe.value)
+        val userDataPointer = checkNotNull(io_uring_cqe_get_data(cqe.value)) {
+            "No continuation found in the CQE."
+        }
+        val hydratedCqe = cqe.pointed!!
+        val res = hydratedCqe.res
+        userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
+            cont.resumeWithIntResult(res)
+        }
+        submissionQueueEvents.trySend(Unit).getOrThrow()
     }
 
     private fun ensureActive() = job.ensureActive()

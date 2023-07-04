@@ -46,7 +46,7 @@ class KernelURingTest {
         }
     }
 
-    @Test fun `URing opens file`() = runBlocking {
+    @Test fun `URing opens file`() = runTest {
         ringAssert {ring ->
             val fd = async { ring.open(filePath = "./src/linuxX64Test/resources/hello.txt") }
             ring.submit()
@@ -55,7 +55,7 @@ class KernelURingTest {
     }
 
     @Test fun `URing fails to open file after ring close`() {
-        runBlocking {
+        runTest {
             ringAssert {ring ->
                 ring.close()
                 assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
@@ -65,10 +65,11 @@ class KernelURingTest {
         }
     }
 
-    @Test fun `URing closes file descriptor`() = runBlocking {
+    @Test fun `URing closes file descriptor`() = runTest {
         ringAssert {ring ->
             val fd = async { ring.open(filePath = "./src/linuxX64Test/resources/hello.txt") }
             ring.submit()
+            fd.await()
             val job = launch { ring.close(fd.await()) }
             ring.submit()
             job.join()
@@ -76,7 +77,7 @@ class KernelURingTest {
     }
 
     @Test fun `URing fails to close file descriptor after ring close`() {
-        runBlocking {
+        runTest {
             ringAssert { ring ->
                 ring.close()
                 assertFailsWith<CancellationException> {
@@ -87,7 +88,7 @@ class KernelURingTest {
     }
 
     @Test fun `URing fails to close bad file descriptor`() {
-        runBlocking {
+        runTest {
             ringAssert { ring ->
                 val job = launch {
                     val e = assertFailsWith<IllegalStateException> {
@@ -102,7 +103,7 @@ class KernelURingTest {
     }
 
 
-    @Test fun `URing fileStatus returns file size`() = runBlocking {
+    @Test fun `URing fileStatus returns file size`() = runTest {
         ringAssert { ring ->
             val status = async {
                 ring.fileStatus(
@@ -118,11 +119,12 @@ class KernelURingTest {
         }
     }
 
-    @Test fun `URing vectorRead reads into buffer`() = runBlocking {
+    @Test fun `URing vectorRead reads into buffer`() = runTest {
         ringAssert { ring ->
             val fd = async { ring.open(filePath = "./src/linuxX64Test/resources/hello.txt") }
             ring.submit()
             val buffer = ByteArray(100)
+            fd.await()
             val bytesRead = async { ring.vectorRead(fd.await(), buffer) }
             ring.submit()
             assertTrue(bytesRead.await() > 0)
@@ -134,7 +136,7 @@ class KernelURingTest {
     }
 
     @Test fun `URing vectorRead fails after ring close`() {
-        runBlocking {
+        runTest {
             ringAssert { ring ->
                 ring.close()
                 assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed.") {
@@ -144,7 +146,7 @@ class KernelURingTest {
         }
     }
 
-    @Test fun `URing vectorWrite writes buffer contents into file`() = runBlocking {
+    @Test fun `URing vectorWrite writes buffer contents into file`() = runTest {
         ringAssert { ring ->
             val fd = async {
                 ring.open(
@@ -174,7 +176,7 @@ class KernelURingTest {
         }
     }
 
-    @Test fun `URing vectorWrite fails after ring close`() = runBlocking {
+    @Test fun `URing vectorWrite fails after ring close`() = runTest {
         ringAssert { ring ->
             ring.close()
             assertFailsWith<IllegalStateException>(message = "Uring was cancelled or closed.") {
