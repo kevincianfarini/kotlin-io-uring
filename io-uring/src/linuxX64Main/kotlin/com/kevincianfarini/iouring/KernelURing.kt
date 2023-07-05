@@ -1,7 +1,6 @@
 package com.kevincianfarini.iouring
 
 import com.kevincianfarini.iouring.internal.*
-import com.kevincianfarini.iouring.internal.DisposingContinuation
 import kotlinx.cinterop.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -9,6 +8,7 @@ import kotlinx.coroutines.channels.getOrElse
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import liburing.*
+import kotlin.coroutines.resume
 
 @ExperimentalStdlibApi
 public class KernelURing(
@@ -44,13 +44,13 @@ public class KernelURing(
     override suspend fun noOp() {
         ensureActive()
         val sqe = getSubmissionQueueEntryAndMaybeSubmit()
-        return suspendCancellableCoroutine { cont ->
-            val continuation = UnitContinuation(cont)
-            val ref = StableRef.create(continuation)
+        val intResult = suspendCancellableCoroutine<Int> { cont ->
+            val ref = StableRef.create(cont)
             io_uring_prep_nop(sqe)
             io_uring_sqe_set_data(sqe, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, ref)
+            cont.registerIOUringCancellation(ring, ref)
         }
+        checkIntResult(intResult)
     }
 
     override suspend fun open(
@@ -59,22 +59,17 @@ public class KernelURing(
         flags: Int,
         mode: Int,
         resolve: Int
-    ): Int {
+    ): Int = memScoped {
         ensureActive()
         val sqe = getSubmissionQueueEntryAndMaybeSubmit()
-        return suspendCancellableCoroutine { cont ->
-            val pathPointer = filePath.utf8.getPointer(heap)
-            val how = heap.alloc<open_how> {
+        val result = suspendCancellableCoroutine<Int> { cont ->
+            val pathPointer = filePath.utf8.getPointer(this)
+            val how = alloc<open_how> {
                 this.flags = flags.convert()
                 this.mode = mode.convert()
                 this.resolve = resolve.convert()
             }
-            val continuation = IntContinuation(cont) {
-                heap.free(how)
-                heap.free(pathPointer)
-            }
-
-            val ref = StableRef.create(continuation)
+            val ref = StableRef.create(cont)
             io_uring_prep_openat2(
                 sqe = sqe,
                 dfd = directoryFileDescriptor,
@@ -82,32 +77,34 @@ public class KernelURing(
                 how = how.ptr,
             )
             io_uring_sqe_set_data(sqe, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, ref)
+            cont.registerIOUringCancellation(ring, ref)
         }
+
+        return checkIntResult(result)
     }
 
     override suspend fun close(fileDescriptor: Int) {
         ensureActive()
         val sqe = getSubmissionQueueEntryAndMaybeSubmit()
-        return suspendCancellableCoroutine<Unit> { cont ->
-            val continuation = UnitContinuation(cont)
-            val ref = StableRef.create(continuation)
+        val result = suspendCancellableCoroutine<Int> { cont ->
+            val ref = StableRef.create(cont)
             io_uring_prep_close(sqe = sqe, fd = fileDescriptor)
             io_uring_sqe_set_data(sqe, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, ref)
+            cont.registerIOUringCancellation(ring, ref)
         }
+        checkIntResult(result)
     }
 
     override suspend fun fileStatus(
         filePath: String,
         request: FileStatusRequest,
         directoryFileDescriptor: Int
-    ): FileStatusResult {
+    ): FileStatusResult = memScoped {
         ensureActive()
         val sqe = getSubmissionQueueEntryAndMaybeSubmit()
-        return suspendCancellableCoroutine { cont ->
-            val pathPointer = filePath.utf8.getPointer(heap)
-            val statxbuf = heap.alloc<statx>()
+        val pathPointer = filePath.utf8.getPointer(this)
+        val statxbuf = alloc<statx>()
+        val result = suspendCancellableCoroutine<Int> { cont ->
             io_uring_prep_statx(
                 sqe = sqe,
                 dfd = directoryFileDescriptor,
@@ -116,26 +113,28 @@ public class KernelURing(
                 mask = request.bitMask,
                 statxbuf = statxbuf.ptr,
             )
-
-            val continuation = ValueProducingContinuation(cont, statxbuf::toFileStatusResult) {
-                heap.free(pathPointer)
-                heap.free(statxbuf)
-            }
-            val ref = StableRef.create(continuation)
+            val ref = StableRef.create(cont)
             io_uring_sqe_set_data(sqe, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, ref)
+            cont.registerIOUringCancellation(ring, ref)
         }
+        checkIntResult(result)
+        statxbuf.toFileStatusResult()
     }
 
-    override suspend fun vectorRead(fileDescriptor: Int, vararg buffers: ByteArray, offset: ULong, flags: Int): Int {
+    override suspend fun vectorRead(
+        fileDescriptor: Int,
+        vararg buffers: ByteArray,
+        offset: ULong,
+        flags: Int
+    ): Int = memScoped {
         ensureActive()
         val sqe = getSubmissionQueueEntryAndMaybeSubmit()
-        return suspendCancellableCoroutine { cont ->
-            val pinnedBuffers = buffers.map { it.pin() }
-            val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
-                iov_len = pinnedBuffers[index].get().size.convert()
-                iov_base = pinnedBuffers[index].addressOf(0)
-            }
+        val pinnedBuffers = buffers.map { it.pin() }
+        val iovecs = allocArray<iovec>(buffers.size) { index ->
+            iov_len = pinnedBuffers[index].get().size.convert()
+            iov_base = pinnedBuffers[index].addressOf(0)
+        }
+        val result = suspendCancellableCoroutine<Int> { cont ->
             io_uring_prep_readv2(
                 sqe = sqe,
                 fd = fileDescriptor,
@@ -144,25 +143,28 @@ public class KernelURing(
                 offset = offset,
                 flags = flags,
             )
-            val continuation = IntContinuation(cont) {
-                pinnedBuffers.forEach { it.unpin() }
-                heap.free(iovecs)
-            }
-            val ref = StableRef.create(continuation)
+            val ref = StableRef.create(cont)
             io_uring_sqe_set_data(sqe, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, ref)
+            cont.registerIOUringCancellation(ring, ref)
         }
+        pinnedBuffers.forEach { it.unpin() }
+        checkIntResult(result)
     }
 
-    override suspend fun vectorWrite(fileDescriptor: Int, vararg buffers: ByteArray, offset: ULong, flags: Int): Int {
+    override suspend fun vectorWrite(
+        fileDescriptor: Int,
+        vararg buffers: ByteArray,
+        offset: ULong,
+        flags: Int
+    ): Int = memScoped {
         ensureActive()
         val sqe = getSubmissionQueueEntryAndMaybeSubmit()
-        return suspendCancellableCoroutine { cont ->
-            val pinnedBuffers = buffers.map { it.pin() }
-            val iovecs = heap.allocArray<iovec>(buffers.size) { index ->
-                iov_len = pinnedBuffers[index].get().size.convert()
-                iov_base = pinnedBuffers[index].addressOf(0)
-            }
+        val pinnedBuffers = buffers.map { it.pin() }
+        val iovecs = allocArray<iovec>(buffers.size) { index ->
+            iov_len = pinnedBuffers[index].get().size.convert()
+            iov_base = pinnedBuffers[index].addressOf(0)
+        }
+        val result = suspendCancellableCoroutine<Int> { cont ->
             io_uring_prep_writev2(
                 sqe = sqe,
                 fd = fileDescriptor,
@@ -171,14 +173,12 @@ public class KernelURing(
                 offset = offset,
                 flags = flags,
             )
-            val continuation = IntContinuation(cont) {
-                pinnedBuffers.forEach { it.unpin() }
-                heap.free(iovecs)
-            }
-            val ref = StableRef.create(continuation)
+            val ref = StableRef.create(cont)
             io_uring_sqe_set_data(sqe, ref.asCPointer())
-            continuation.registerIOUringCancellation(ring, ref)
+            cont.registerIOUringCancellation(ring, ref)
         }
+        pinnedBuffers.forEach { it.unpin() }
+        checkIntResult(result)
     }
 
     override suspend fun submit() {
@@ -275,15 +275,11 @@ public class KernelURing(
         }
         val hydratedCqe = cqe.pointed!!
         val res = hydratedCqe.res
-        userDataPointer.asStableRef<DisposingContinuation<*>>().use { cont ->
-            cont.resumeWithIntResult(res)
+        userDataPointer.asStableRef<CancellableContinuation<Int>>().use { cont ->
+            cont.resume(res)
         }
         submissionQueueEvents.trySend(Unit).getOrThrow()
     }
 
     private fun ensureActive() = job.ensureActive()
 }
-
-private fun <T : CVariable> CValues<T>.getPointer(
-    placement: NativeFreeablePlacement
-): CPointer<T> = place(interpretCPointer(placement.alloc(size, align).rawPtr)!!)
