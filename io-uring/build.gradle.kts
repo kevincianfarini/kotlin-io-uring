@@ -19,6 +19,13 @@ kotlin {
     }
 
     sourceSets {
+
+        all {
+            languageSettings {
+                optIn("kotlinx.cinterop.ExperimentalForeignApi")
+            }
+        }
+
         val linuxX64Main by getting {
             dependencies {
                 api(libs.kotlinx.coroutines.core)
