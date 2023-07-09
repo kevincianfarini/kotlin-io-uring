@@ -227,13 +227,14 @@ public class KernelURing(
     }
 
 
-    @OptIn(ExperimentalCoroutinesApi::class)
+    @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
     private suspend fun pollCompletions() {
         val workerThread = newSingleThreadContext("io_uring worker thread")
         val coroutineName = CoroutineName("io_uring completion queue job")
         runInterruptible(signal = SIGALRM, coroutineContext = workerThread + coroutineName) {
             pollCompletionsBlocking()
         }
+        workerThread.close()
     }
 
     private fun pollCompletionsBlocking() = memScoped {
