@@ -186,7 +186,28 @@ public class KernelURing(
         submissionEvents.send(Unit)
     }
 
-    override fun close(): Unit = scope.cancel("KernelURing was closed!")
+    override fun close() {
+        scope.cancel("KernelURing was closed!")
+        // The ring has been canceled. In the event that there's no readily available
+        // CQE to be processed in the queue, we prime the ring with a nop. This allows
+        // the thread looping over completion events to unblock from io_uring_wait_cqe,
+        // process the event, and then check for cancellation. Upon seeing that the scope
+        // has been cancelled, we do not enter the loop again and thus gracefully exit.
+        submissionQueueEvents.tryReceive().getOrNull()?.run {
+            val sqe = getSubmissionQueueEvent()
+            io_uring_prep_nop(sqe)
+            // Explicitly set the data of this SQE as null. Xalling io_uring_cqe_get_data
+            // without first setting the data in a SQE results in an undefined return value.
+            // In practice this will return a stale pointer to a continuation which has
+            // been unpinned from memory. When we try to convert it back into a StableRef
+            // the pointer has moved, and thus causes a segfault.
+            //
+            // Explicitly setting this data as null allows us to properly handle this nop
+            // on the CQE process side without attmepting to resume a bogus continuation.
+            io_uring_sqe_set_data(sqe = sqe, data = null)
+        }
+        io_uring_submit(ring.ptr)
+    }
 
     /**
      * Try to synchronously get a SQE if possible, otherwise submit the current queue and wait
@@ -226,39 +247,32 @@ public class KernelURing(
         }
     }
 
-
     @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
     private suspend fun pollCompletions() {
         val workerThread = newSingleThreadContext("io_uring worker thread")
-        val coroutineName = CoroutineName("io_uring completion queue job")
-        runInterruptible(signal = SIGALRM, coroutineContext = workerThread + coroutineName) {
-            pollCompletionsBlocking()
+        try {
+            val coroutineName = CoroutineName("io_uring completion queue job")
+            withContext(workerThread + coroutineName) {
+                pollCompletionsBlocking()
+            }
+        } finally {
+            workerThread.close()
         }
-        workerThread.close()
     }
 
-    private fun pollCompletionsBlocking() = memScoped {
+    private fun CoroutineScope.pollCompletionsBlocking() = memScoped {
         val cqe = allocPointerTo<io_uring_cqe>()
-        var interrupted = false
-        while (!interrupted) { interrupted = awaitCompletionEvent(cqe) }
+        while (isActive) { blockForCompletionEvent(cqe) }
     }
 
-    /**
-     * The return value is a boolean signifying whether this blocking function was interrupted.
-     */
-    private fun awaitCompletionEvent(cqe: CPointerVar<io_uring_cqe>): Boolean {
+    private fun blockForCompletionEvent(cqe: CPointerVar<io_uring_cqe>) {
         pollingStarted.value = true
         return when (val cqeRes = io_uring_wait_cqe(ring.ptr, cqe.ptr)) {
             0 -> {
                 // We have at least one populated CQE. Resume it and then loop other potentially remaining ones.
                 resumeContinuation(cqe)
                 loopAvailableCqes(cqe)
-                false
             }
-            // The blocking io_uring_wait_cqe call has been interrupted. This is because cancellation has occured while
-            // the thread was blocked on this call, and we've manually signaled to the worker thread that this should
-            // stop blocking. Return `true` to signify we have been interrupted.
-            -EINTR -> true
             else -> error("Failed to get CQE. Error $cqeRes")
         }
     }
@@ -271,13 +285,12 @@ public class KernelURing(
 
     private fun resumeContinuation(cqe: CPointerVar<io_uring_cqe>) {
         io_uring_cqe_seen(ring.ptr, cqe.value)
-        val userDataPointer = checkNotNull(io_uring_cqe_get_data(cqe.value)) {
-            "No continuation found in the CQE."
-        }
-        val hydratedCqe = cqe.pointed!!
-        val res = hydratedCqe.res
-        userDataPointer.asStableRef<CancellableContinuation<Int>>().use { cont ->
-            cont.resume(res)
+        io_uring_cqe_get_data(cqe.value)?.let { value ->
+            val hydratedCqe = cqe.pointed!!
+            val res = hydratedCqe.res
+            value.asStableRef<CancellableContinuation<Int>>().use { cont ->
+                cont.resume(res)
+            }
         }
         submissionQueueEvents.trySend(Unit).getOrThrow()
     }
