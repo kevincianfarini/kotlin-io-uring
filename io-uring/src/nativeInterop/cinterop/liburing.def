@@ -3,3 +3,5 @@ staticLibraries = liburing.a
 libraryPaths = /home/kevin/code/kotlin-io-uring/liburing/src
 compilerOpts = -I/usr/include
 noStringConversion = io_uring_prep_openat2 io_uring_prep_statx
+
+

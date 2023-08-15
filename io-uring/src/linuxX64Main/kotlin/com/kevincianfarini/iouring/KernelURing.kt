@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.first
 import liburing.*
 import kotlin.coroutines.resume
 
-@ExperimentalStdlibApi
 public class KernelURing(
     queueDepth: QueueDepth,
     ringFlags: UInt,
@@ -184,10 +183,6 @@ public class KernelURing(
     override suspend fun submit() {
         ensureActive()
         submissionEvents.send(Unit)
-    }
-
-    override fun close() {
-        scope.cancel("KernelURing was closed!")
     }
 
     /**

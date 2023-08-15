@@ -19,9 +19,6 @@ class Cat : CliktCommand() {
 
     @ExperimentalStdlibApi
     override fun run() = runBlocking {
-        KernelURing(QueueDepth(32u), 0u, this).use { ring ->
-            ring.catFile(filePath)
-        }
     }
 }
 

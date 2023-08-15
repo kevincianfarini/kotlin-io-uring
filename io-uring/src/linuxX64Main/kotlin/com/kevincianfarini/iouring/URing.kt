@@ -2,8 +2,7 @@ package com.kevincianfarini.iouring
 
 import liburing.AT_FDCWD
 
-@ExperimentalStdlibApi
-public interface URing : AutoCloseable {
+public interface URing {
 
     /**
      * An operation that performs no actual work, but execises the [URing] infrastructure.

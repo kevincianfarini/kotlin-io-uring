@@ -6,7 +6,6 @@ import kotlinx.coroutines.test.runTest
 import liburing.*
 import kotlin.test.*
 
-@ExperimentalStdlibApi
 class KernelURingTest {
 
    @Test fun `URing exits when parent scope cancels`() = runTest {
@@ -23,7 +22,7 @@ class KernelURingTest {
    }
 
     @Test fun `URing no-op returns`() = runTest {
-        ringAssert {ring ->
+        useRing { ring ->
             val job = launch { ring.noOp() }
             ring.submit()
             job.join()
@@ -31,7 +30,7 @@ class KernelURingTest {
     }
 
     @Test fun `URing no-op cancels`() = runTest {
-        ringAssert { ring ->
+        useRing { ring ->
             val job = async {
                 ring.noOp()
                 throw AssertionError("no-op completed!")
@@ -42,14 +41,11 @@ class KernelURingTest {
     }
 
     @Test fun `URing no-op fails after close`() = runTest {
-        ringAssert { ring ->
-            ring.close()
-            assertFailsWith<CancellationException> { ring.noOp() }
-        }
+        ringCancellationAssert { noOp() }
     }
 
     @Test fun `URing automatically submits and replenishes submission queue`() = runTest {
-        ringAssert {ring ->
+        useRing { ring ->
             val job1 = launch { ring.noOp() }
             val job2 = launch { ring.noOp() }
             val job3 = launch { ring.noOp() }
@@ -61,26 +57,21 @@ class KernelURingTest {
     }
 
     @Test fun `URing opens file`() = runTest {
-        ringAssert {ring ->
+        useRing { ring ->
             val fd = async { ring.open(filePath = "./src/linuxX64Test/resources/hello.txt") }
             ring.submit()
             assertTrue(fd.await() > 0)
         }
     }
 
-    @Test fun `URing fails to open file after ring close`() {
-        runTest {
-            ringAssert {ring ->
-                ring.close()
-                assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed."){
-                    ring.open(filePath = "./src/linuxX64Test/resources/hello.txt")
-                }
-            }
+    @Test fun `URing fails to open file after ring close`() = runTest {
+        ringCancellationAssert {
+            open(filePath = "./src/linuxX64Test/resources/hello.txt")
         }
     }
 
     @Test fun `URing closes file descriptor`() = runTest {
-        ringAssert {ring ->
+        useRing { ring ->
             val fd = async { ring.open(filePath = "./src/linuxX64Test/resources/hello.txt") }
             ring.submit()
             fd.await()
@@ -90,20 +81,15 @@ class KernelURingTest {
         }
     }
 
-    @Test fun `URing fails to close file descriptor after ring close`() {
-        runTest {
-            ringAssert { ring ->
-                ring.close()
-                assertFailsWith<CancellationException> {
-                    ring.close(fileDescriptor = -1)
-                }
-            }
+    @Test fun `URing fails to close file descriptor after ring close`() = runTest {
+        ringCancellationAssert {
+            close(fileDescriptor = -1)
         }
     }
 
     @Test fun `URing fails to close bad file descriptor`() {
         runTest {
-            ringAssert { ring ->
+            useRing { ring ->
                 val job = launch {
                     val e = assertFailsWith<IllegalStateException> {
                         ring.close(-1)
@@ -118,7 +104,7 @@ class KernelURingTest {
 
 
     @Test fun `URing fileStatus returns file size`() = runTest {
-        ringAssert { ring ->
+        useRing { ring ->
             val status = async {
                 ring.fileStatus(
                     filePath = "./src/linuxX64Test/resources/hello.txt",
@@ -134,7 +120,7 @@ class KernelURingTest {
     }
 
     @Test fun `URing vectorRead reads into buffer`() = runTest {
-        ringAssert { ring ->
+        useRing { ring ->
             val fd = async { ring.open(filePath = "./src/linuxX64Test/resources/hello.txt") }
             ring.submit()
             val buffer = ByteArray(100)
@@ -149,19 +135,14 @@ class KernelURingTest {
         }
     }
 
-    @Test fun `URing vectorRead fails after ring close`() {
-        runTest {
-            ringAssert { ring ->
-                ring.close()
-                assertFailsWith<IllegalStateException> (message = "Uring was cancelled or closed.") {
-                    ring.vectorRead(fileDescriptor = -1)
-                }
-            }
+    @Test fun `URing vectorRead fails after ring close`() = runTest {
+        ringCancellationAssert {
+            vectorRead(fileDescriptor = -1)
         }
     }
 
     @Test fun `URing vectorWrite writes buffer contents into file`() = runTest {
-        ringAssert { ring ->
+        useRing { ring ->
             val fd = async {
                 ring.open(
                     filePath = "./src/linuxX64Test/resources",
@@ -191,11 +172,8 @@ class KernelURingTest {
     }
 
     @Test fun `URing vectorWrite fails after ring close`() = runTest {
-        ringAssert { ring ->
-            ring.close()
-            assertFailsWith<IllegalStateException>(message = "Uring was cancelled or closed.") {
-                ring.vectorWrite( fileDescriptor = -1)
-            }
+        ringCancellationAssert {
+            vectorWrite( fileDescriptor = -1)
         }
     }
 }
@@ -204,13 +182,26 @@ class KernelURingTest {
  * This test helper ensures that [assert] completed before we cancel the ring therefore not giving false positives for
  * tests.
  */
-@ExperimentalStdlibApi
-private suspend fun ringAssert(
+private suspend fun useRing(
     queueDepth: QueueDepth = QueueDepth(2u),
     ringFlags: UInt = 0u,
     assert: suspend CoroutineScope.(ring: KernelURing) -> Unit,
 ) = coroutineScope {
-    val ring = KernelURing(queueDepth, ringFlags, this)
-    coroutineScope { assert(ring) }
-    ring.close()
+    val trigger = Channel<Unit>()
+    val job = launch {
+        val ring = KernelURing(queueDepth, ringFlags, this)
+        assert(ring)
+        trigger.send(Unit)
+    }
+    trigger.receive()
+    job.cancelAndJoin()
+}
+
+private suspend fun ringCancellationAssert(
+    assert: suspend KernelURing.() -> Unit,
+) {
+    val scope = CoroutineScope(Job())
+    val ring = KernelURing(QueueDepth(2u), 0u, scope)
+    scope.cancel()
+    assertFailsWith<CancellationException> { ring.assert() }
 }
