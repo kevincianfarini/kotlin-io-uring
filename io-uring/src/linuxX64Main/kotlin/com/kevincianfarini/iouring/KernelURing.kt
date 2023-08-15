@@ -188,25 +188,6 @@ public class KernelURing(
 
     override fun close() {
         scope.cancel("KernelURing was closed!")
-        // The ring has been canceled. In the event that there's no readily available
-        // CQE to be processed in the queue, we prime the ring with a nop. This allows
-        // the thread looping over completion events to unblock from io_uring_wait_cqe,
-        // process the event, and then check for cancellation. Upon seeing that the scope
-        // has been cancelled, we do not enter the loop again and thus gracefully exit.
-        submissionQueueEvents.tryReceive().getOrNull()?.run {
-            val sqe = getSubmissionQueueEvent()
-            io_uring_prep_nop(sqe)
-            // Explicitly set the data of this SQE as null. Xalling io_uring_cqe_get_data
-            // without first setting the data in a SQE results in an undefined return value.
-            // In practice this will return a stale pointer to a continuation which has
-            // been unpinned from memory. When we try to convert it back into a StableRef
-            // the pointer has moved, and thus causes a segfault.
-            //
-            // Explicitly setting this data as null allows us to properly handle this nop
-            // on the CQE process side without attmepting to resume a bogus continuation.
-            io_uring_sqe_set_data(sqe = sqe, data = null)
-        }
-        io_uring_submit(ring.ptr)
     }
 
     /**
@@ -236,6 +217,31 @@ public class KernelURing(
     private suspend fun poll() = coroutineScope {
         launch { pollSubmissions() }
         launch { pollCompletions() }
+        launch { cooperativelyCancel() }
+    }
+
+    private suspend fun cooperativelyCancel(): Nothing = suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation {
+            // The ring has been canceled. In the event that there's no readily available
+            // CQE to be processed in the queue, we prime the ring with a nop. This allows
+            // the thread looping over completion events to unblock from io_uring_wait_cqe,
+            // process the event, and then check for cancellation. Upon seeing that the scope
+            // has been cancelled, we do not enter the loop again and thus gracefully exit.
+            submissionQueueEvents.tryReceive().getOrNull()?.run {
+                val sqe = getSubmissionQueueEvent()
+                io_uring_prep_nop(sqe)
+                // Explicitly set the data of this SQE as null. Calling io_uring_cqe_get_data
+                // without first setting the data in a SQE results in an undefined return value.
+                // In practice this will return a stale pointer to a continuation which has
+                // been unpinned from memory. When we try to convert it back into a StableRef
+                // the pointer has moved, and thus causes a segfault.
+                //
+                // Explicitly setting this data as null allows us to properly handle this nop
+                // on the CQE process side without attempting to resume a bogus continuation.
+                io_uring_sqe_set_data(sqe = sqe, data = null)
+            }
+            io_uring_submit(ring.ptr)
+        }
     }
 
     private suspend fun pollSubmissions() = withContext(CoroutineName("io_uring submission job")) {

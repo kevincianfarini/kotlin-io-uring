@@ -1,12 +1,26 @@
 package com.kevincianfarini.iouring
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.runTest
 import liburing.*
 import kotlin.test.*
 
 @ExperimentalStdlibApi
 class KernelURingTest {
+
+   @Test fun `URing exits when parent scope cancels`() = runTest {
+       val trigger = Channel<Unit>()
+       val job = launch {
+           val ring = KernelURing(QueueDepth(2u), 0u, this)
+           val foo = launch { ring.noOp() }
+           ring.submit()
+           foo.join()
+           trigger.send(Unit)
+       }
+       trigger.receive()
+       job.cancelAndJoin()
+   }
 
     @Test fun `URing no-op returns`() = runTest {
         ringAssert {ring ->
